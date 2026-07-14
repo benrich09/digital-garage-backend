@@ -1,6 +1,6 @@
 -- name: CreatePayment :one
 insert into payments (booking_id, amount, currency, method, status, provider, provider_tx_ref)
-values ($1, $2, $3, 'mobile_money', 'pending', 'flutterwave', $4)
+values ($1, $2, $3, 'mobile_money', 'pending', $4, $5)
 returning id, status, provider_tx_ref, created_at;
 
 -- name: GetPaymentByTxRef :one
@@ -16,6 +16,11 @@ from payments
 where booking_id = $1
 order by created_at desc
 limit 1;
+
+-- name: UpdatePaymentProviderTxRef :exec
+update payments
+set provider_tx_ref = $2
+where provider_tx_ref = $1;
 
 -- name: MarkPaymentSettled :exec
 update payments

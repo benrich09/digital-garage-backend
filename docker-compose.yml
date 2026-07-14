@@ -1,0 +1,15 @@
+services:
+  api:
+    build: .
+    image: digital-garage-api:latest
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    # No Docker-level HEALTHCHECK here: the runtime image is
+    # distroless/static (no shell, no wget/curl) by design, for a
+    # smaller attack surface. Use your platform's HTTP health check
+    # against GET /healthz instead (Railway/Render/Fly/K8s all support
+    # this natively; on a bare VPS, point your reverse proxy or
+    # monitoring at it).

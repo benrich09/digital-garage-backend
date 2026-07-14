@@ -76,27 +76,34 @@ shape) live in `pkg/` in case you ever split out a second service.
   deploys, which would otherwise risk leaving Postgres connections in a
   bad state.
 
-## Payments (mobile money via Flutterwave) & Reviews
+## Payments (mobile money via M-Pesa & Selcom) & Reviews
 
-- `POST /payments/initiate` (car_owner) — starts a Vodacom M-Pesa / Tigo
-  Pesa / Airtel Money charge for a **completed** booking via Flutterwave's
-  Tanzania mobile money charge endpoint. Returns immediately with
-  `status: pending`; the car owner approves via a PIN/USSD prompt on
-  their phone.
-- `POST /webhooks/flutterwave` (public, signature-verified) — Flutterwave
-  calls this when the charge settles. Verifies the `verif-hash` header
-  against `FLUTTERWAVE_WEBHOOK_HASH` (a static shared secret you set in
-  the Flutterwave dashboard — not an HMAC signature) using a
-  constant-time comparison, then marks the payment `paid`/`failed` and
-  flips the service request to `paid` on success, notifying the car
-  owner over WebSocket.
+- `POST /payments/initiate` (car_owner) — starts a mobile money charge for a
+  **completed** booking. Body: `{ "booking_id", "phone_number", "provider" }`
+  where `provider` is `"mpesa"` or `"selcom"` (defaults to `"mpesa"` if
+  omitted). Returns immediately with `status: pending`; the car owner
+  approves via a PIN/USSD prompt on their phone.
+- `POST /webhooks/mpesa` (public) — Safaricom/Vodacom Daraja calls this
+  when an STK Push settles. Verified via a shared secret query param
+  (`MPESA_CALLBACK_SECRET`) appended to the registered `CallBackURL`,
+  since Daraja doesn't sign its callback bodies.
+- `POST /webhooks/selcom` (public, signature-verified) — Selcom calls this
+  when a wallet charge settles. Verifies the `Digest` header (HMAC-SHA256
+  over the raw body, keyed with `SELCOM_API_SECRET`) using a
+  constant-time comparison.
+- Either webhook marks the payment `paid`/`failed` and flips the service
+  request to `paid` on success, notifying the car owner over WebSocket.
 - `POST /reviews` (car_owner) — rates a garage or mechanic. Rejected if:
   the caller isn't the request's car owner, the request hasn't reached
   `completed`/`paid`/`closed` yet, or a review for that booking/target
   already exists (checked in Go and backed by a DB unique constraint).
 
-Configure `FLUTTERWAVE_SECRET_KEY`, `FLUTTERWAVE_WEBHOOK_HASH` in `.env`
-before testing payments — see `.env.example`.
+Configure `MPESA_CONSUMER_KEY`, `MPESA_CONSUMER_SECRET`, `MPESA_SHORTCODE`,
+`MPESA_PASSKEY`, `MPESA_CALLBACK_URL`, `MPESA_CALLBACK_SECRET`,
+`SELCOM_VENDOR_ID`, `SELCOM_API_KEY`, `SELCOM_API_SECRET` in `.env` before
+testing payments — see `.env.example`. Both default to their sandbox base
+URLs; set `MPESA_BASE_URL=https://api.safaricom.co.ke` and
+`SELCOM_BASE_URL=https://apigw.selcommobile.com` for production.
 
 ## Important note on RLS vs. this Go backend
 
@@ -135,4 +142,49 @@ permission error), not the only line. Even if a service-layer check has
 a bug, RLS still blocks a query from ever returning rows outside a
 user's own data, so the two layers work as defense in depth rather than
 duplicated effort.
-# digital-garage-backend
+
+## Deploying (any host)
+
+The API is a single static binary in a distroless Docker image, so it
+runs unmodified on any host that can run a container — a bare VPS, a
+managed platform (Railway, Render, Fly.io), or a Kubernetes cluster.
+Nothing about it assumes a specific provider.
+
+```bash
+docker build -t digital-garage-api .
+docker run -d --name digital-garage-api \
+  --env-file .env \
+  -p 8080:8080 \
+  --restart unless-stopped \
+  digital-garage-api
+```
+
+1. **Apply migrations first**, from your machine or CI (not from the
+   running container — this binary never runs migrations itself):
+   ```bash
+   supabase link --project-ref YOUR_PROJECT_REF
+   supabase db push
+   ```
+2. **Set every variable in `.env.example`** as real environment
+   variables on whatever platform you deploy to (most platforms — Railway,
+   Render, Fly, systemd, Docker Compose — read a `.env` file or let you
+   paste these into a dashboard; none of them are Docker- or
+   provider-specific).
+3. **PORT**: the app reads `PORT` from the environment and listens on
+   it — platforms that inject their own `PORT` (Railway, Render, Fly)
+   work with zero changes.
+4. **Webhooks need a public HTTPS URL**: `MPESA_CALLBACK_URL` and the
+   Selcom dashboard's webhook URL must point at wherever you deploy
+   (e.g. `https://api.yourdomain.com/webhooks/mpesa?secret=...` and
+   `https://api.yourdomain.com/webhooks/selcom`). Safaricom/Selcom will
+   not call back to `localhost`.
+5. **Health check**: point your platform's health check at `GET
+   /healthz` (already wired to ping the DB pool).
+6. **TLS**: put this behind a reverse proxy or platform-managed load
+   balancer (Caddy/Nginx/Traefik on a bare VPS; automatic on
+   Railway/Render/Fly) — the Go process itself only speaks plain HTTP
+   on `PORT`.
+
+A minimal `docker-compose.yml` for local/VPS use is included; adjust or
+remove it for platforms that build directly from the Dockerfile.
+

@@ -71,13 +71,13 @@ type Offer struct {
 }
 
 type CreateOfferInput struct {
-	ServiceRequestID uuid.UUID `json:"-"` // taken from the URL, not the body
-	GarageID         uuid.UUID `json:"garage_id" `
+	ServiceRequestID uuid.UUID  `json:"-"` // taken from the URL, not the body
+	GarageID         uuid.UUID  `json:"garage_id" `
 	MechanicID       *uuid.UUID `json:"mechanic_id,omitempty"`
-	Price            string    `json:"price"`
-	Currency         string    `json:"currency"`
-	EtaMinutes       *int32    `json:"eta_minutes,omitempty"`
-	Notes            *string   `json:"notes,omitempty"`
+	Price            string     `json:"price"`
+	Currency         string     `json:"currency"`
+	EtaMinutes       *int32     `json:"eta_minutes,omitempty"`
+	Notes            *string    `json:"notes,omitempty"`
 }
 
 type AcceptOfferResult struct {
@@ -119,7 +119,7 @@ type Payment struct {
 type InitiatePaymentInput struct {
 	BookingID   string `json:"booking_id"`
 	PhoneNumber string `json:"phone_number"`
-	Network     string `json:"network"` // "Vodacom" | "Tigo" | "Airtel"
+	Provider    string `json:"provider"` // "mpesa" | "selcom"
 }
 
 // --- Reviews ------------------------------------------------------------

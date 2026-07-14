@@ -11,7 +11,6 @@ import (
 	"github.com/yourorg/digital-garage/internal/models"
 	"github.com/yourorg/digital-garage/internal/repository"
 	"github.com/yourorg/digital-garage/internal/ws"
-
 	// After running `swag init -g cmd/api/main.go -o docs` (see README),
 	// uncomment this import so swagger.HandlerDefault below has docs to
 	// serve. Left out here so the project compiles before you've
@@ -31,18 +30,19 @@ import (
 // mobile-only; RBAC (via RequireRole) is what actually differentiates
 // what each authenticated caller can do, not a separate API surface.
 type Deps struct {
-	Health          *HealthHandler
-	Garage          *GarageHandler
-	ServiceRequest  *ServiceRequestHandler
-	Offer           *OfferHandler
-	Booking         *BookingHandler
-	Mechanic        *MechanicHandler
-	Admin           *AdminHandler
-	Payment         *PaymentHandler
-	Review          *ReviewHandler
-	ProfileRepo     repository.ProfileRepository
-	WSManager       *ws.Manager
-	JWTSecret       string
+	Health         *HealthHandler
+	Garage         *GarageHandler
+	ServiceRequest *ServiceRequestHandler
+	Offer          *OfferHandler
+	Booking        *BookingHandler
+	Mechanic       *MechanicHandler
+	Admin          *AdminHandler
+	Payment        *PaymentHandler
+	Review         *ReviewHandler
+	Device         *DeviceHandler
+	ProfileRepo    repository.ProfileRepository
+	WSManager      *ws.Manager
+	JWTSecret      string
 }
 
 func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
@@ -64,13 +64,17 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	garages := app.Group("/garages")
 	garages.Get("/nearby", d.Garage.ListNearby)
 
-	// Flutterwave calls this directly — no user JWT to check, the
-	// handler verifies the verif-hash header against our own secret
+	// M-Pesa (Daraja) and Selcom call these directly — no user JWT to
+	// check. Each handler verifies its own provider-specific secret
 	// instead. Must stay outside the `auth` group below.
-	app.Post("/webhooks/flutterwave", d.Payment.Webhook)
+	app.Post("/webhooks/mpesa", d.Payment.MpesaCallback)
+	app.Post("/webhooks/selcom", d.Payment.SelcomWebhook)
 
 	// --- Authenticated (any role) -------------------------------------
 	auth := app.Group("", middleware.RequireAuth(d.JWTSecret), middleware.LoadProfile(d.ProfileRepo))
+
+	auth.Post("/devices/register", d.Device.Register)
+	auth.Post("/devices/unregister", d.Device.Unregister)
 
 	// car_owner routes
 	carOwner := auth.Group("", middleware.RequireRole(models.RoleCarOwner))
@@ -84,6 +88,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	// garage/mechanic viewing a matched one — enforced further by RLS)
 	auth.Get("/service-requests/:id", d.ServiceRequest.Get)
 	auth.Get("/service-requests/:id/offers", d.Offer.ListForRequest)
+	auth.Get("/service-requests/:id/booking", d.Booking.GetByRequest)
 
 	// garage_owner routes
 	garageOwner := auth.Group("", middleware.RequireRole(models.RoleGarageOwner))

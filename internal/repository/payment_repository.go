@@ -10,10 +10,11 @@ import (
 )
 
 type PaymentRepository interface {
-	Create(ctx context.Context, bookingID uuid.UUID, amount, currency, txRef string) (models.Payment, error)
+	Create(ctx context.Context, bookingID uuid.UUID, amount, currency, provider, txRef string) (models.Payment, error)
 	GetByBooking(ctx context.Context, bookingID uuid.UUID) (models.Payment, error)
 	GetByTxRef(ctx context.Context, txRef string) (models.Payment, error)
 	MarkSettled(ctx context.Context, txRef, status string, providerTxnID *string, rawPayload json.RawMessage) error
+	UpdateProviderTxRef(ctx context.Context, oldTxRef, newTxRef string) error
 }
 
 type paymentRepository struct {
@@ -24,14 +25,14 @@ func NewPaymentRepository(q *sqlcgen.Queries) PaymentRepository {
 	return &paymentRepository{q: q}
 }
 
-func (r *paymentRepository) Create(ctx context.Context, bookingID uuid.UUID, amount, currency, txRef string) (models.Payment, error) {
+func (r *paymentRepository) Create(ctx context.Context, bookingID uuid.UUID, amount, currency, provider, txRef string) (models.Payment, error) {
 	row, err := r.q.CreatePayment(ctx, sqlcgen.CreatePaymentParams{
-		BookingID: bookingID, Amount: amount, Currency: currency, ProviderTxRef: txRef,
+		BookingID: bookingID, Amount: amount, Currency: currency, Provider: provider, ProviderTxRef: txRef,
 	})
 	if err != nil {
 		return models.Payment{}, err
 	}
-	return models.Payment{ID: row.ID, BookingID: bookingID, Amount: amount, Currency: currency, Status: row.Status, ProviderTxRef: row.ProviderTxRef, CreatedAt: row.CreatedAt}, nil
+	return models.Payment{ID: row.ID, BookingID: bookingID, Amount: amount, Currency: currency, Provider: provider, Status: row.Status, ProviderTxRef: row.ProviderTxRef, CreatedAt: row.CreatedAt}, nil
 }
 
 func (r *paymentRepository) GetByBooking(ctx context.Context, bookingID uuid.UUID) (models.Payment, error) {
@@ -52,6 +53,10 @@ func (r *paymentRepository) GetByTxRef(ctx context.Context, txRef string) (model
 
 func (r *paymentRepository) MarkSettled(ctx context.Context, txRef, status string, providerTxnID *string, rawPayload json.RawMessage) error {
 	return r.q.MarkPaymentSettled(ctx, txRef, status, providerTxnID, rawPayload)
+}
+
+func (r *paymentRepository) UpdateProviderTxRef(ctx context.Context, oldTxRef, newTxRef string) error {
+	return r.q.UpdatePaymentProviderTxRef(ctx, oldTxRef, newTxRef)
 }
 
 func toPaymentModel(row sqlcgen.Payment) models.Payment {

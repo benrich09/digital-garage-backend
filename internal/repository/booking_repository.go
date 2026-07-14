@@ -10,6 +10,7 @@ import (
 
 type BookingRepository interface {
 	Get(ctx context.Context, id uuid.UUID) (models.Booking, error)
+	GetByServiceRequest(ctx context.Context, requestID uuid.UUID) (models.Booking, error)
 	SetStatus(ctx context.Context, id uuid.UUID, status string) error
 }
 
@@ -23,6 +24,17 @@ func NewBookingRepository(q *sqlcgen.Queries) BookingRepository {
 
 func (r *bookingRepository) Get(ctx context.Context, id uuid.UUID) (models.Booking, error) {
 	row, err := r.q.GetBooking(ctx, id)
+	if err != nil {
+		return models.Booking{}, err
+	}
+	return models.Booking{
+		ID: row.ID, ServiceRequestID: row.ServiceRequestID, OfferID: row.OfferID,
+		GarageID: row.GarageID, MechanicID: row.MechanicID, Status: row.Status, CreatedAt: row.CreatedAt,
+	}, nil
+}
+
+func (r *bookingRepository) GetByServiceRequest(ctx context.Context, requestID uuid.UUID) (models.Booking, error) {
+	row, err := r.q.GetBookingByRequest(ctx, requestID)
 	if err != nil {
 		return models.Booking{}, err
 	}

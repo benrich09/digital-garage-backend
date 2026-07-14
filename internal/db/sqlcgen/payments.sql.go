@@ -9,7 +9,7 @@ import (
 
 const createPayment = `-- name: CreatePayment :one
 insert into payments (booking_id, amount, currency, method, status, provider, provider_tx_ref)
-values ($1, $2, $3, 'mobile_money', 'pending', 'flutterwave', $4)
+values ($1, $2, $3, 'mobile_money', 'pending', $4, $5)
 returning id, status, provider_tx_ref, created_at
 `
 
@@ -17,11 +17,12 @@ type CreatePaymentParams struct {
 	BookingID     uuid.UUID
 	Amount        string
 	Currency      string
+	Provider      string
 	ProviderTxRef string
 }
 
 func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (CreatePaymentRow, error) {
-	row := q.db.QueryRow(ctx, createPayment, arg.BookingID, arg.Amount, arg.Currency, arg.ProviderTxRef)
+	row := q.db.QueryRow(ctx, createPayment, arg.BookingID, arg.Amount, arg.Currency, arg.Provider, arg.ProviderTxRef)
 	var i CreatePaymentRow
 	err := row.Scan(&i.ID, &i.Status, &i.ProviderTxRef, &i.CreatedAt)
 	return i, err
@@ -55,6 +56,17 @@ func (q *Queries) GetPaymentByBooking(ctx context.Context, bookingID uuid.UUID) 
 	var i Payment
 	err := row.Scan(&i.ID, &i.BookingID, &i.Amount, &i.Currency, &i.Method, &i.Status, &i.Provider, &i.ProviderTxRef, &i.ProviderTransactionID, &i.PaidAt, &i.CreatedAt)
 	return i, err
+}
+
+const updatePaymentProviderTxRef = `-- name: UpdatePaymentProviderTxRef :exec
+update payments
+set provider_tx_ref = $2
+where provider_tx_ref = $1
+`
+
+func (q *Queries) UpdatePaymentProviderTxRef(ctx context.Context, oldTxRef, newTxRef string) error {
+	_, err := q.db.Exec(ctx, updatePaymentProviderTxRef, oldTxRef, newTxRef)
+	return err
 }
 
 const markPaymentSettled = `-- name: MarkPaymentSettled :exec

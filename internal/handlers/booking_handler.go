@@ -19,6 +19,28 @@ type setBookingStatusInput struct {
 	Status string `json:"status"` // "in_progress" | "completed" | "cancelled"
 }
 
+// GetByRequest godoc
+// @Summary      Resolve the booking for a service request
+// @Description  The mobile apps only know a service_request_id until an offer is accepted; this resolves the resulting booking_id (needed for payment initiation and status updates).
+// @Tags         bookings
+// @Security     BearerAuth
+// @Produce      json
+// @Param        id   path      string  true  "Service Request ID"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      404  {object}  apierr.Response
+// @Router       /service-requests/{id}/booking [get]
+func (h *BookingHandler) GetByRequest(c *fiber.Ctx) error {
+	requestID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid service request id")
+	}
+	booking, err := h.svc.GetByRequest(c.Context(), requestID)
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusNotFound, "no booking yet for this request")
+	}
+	return c.JSON(booking)
+}
+
 // SetStatus godoc
 // @Summary      Update a booking's status
 // @Description  garage_owner/mechanic-only. Notifies the car owner via WebSocket (status_update, or job_completed when status=completed).

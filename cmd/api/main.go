@@ -34,7 +34,9 @@ import (
 	"github.com/yourorg/digital-garage/internal/repository"
 	"github.com/yourorg/digital-garage/internal/services"
 	"github.com/yourorg/digital-garage/internal/ws"
-	"github.com/yourorg/digital-garage/pkg/flutterwave"
+	"github.com/yourorg/digital-garage/pkg/fcm"
+	"github.com/yourorg/digital-garage/pkg/mpesa"
+	"github.com/yourorg/digital-garage/pkg/selcom"
 )
 
 func main() {
@@ -69,20 +71,36 @@ func main() {
 	// calls cost nothing at runtime.
 	profileRepo := repository.NewProfileRepository(queries)
 
+	// FCM is optional at startup — a missing project ID just means
+	// PushService.Notify() no-ops (see its comment), so local dev
+	// without Firebase set up still runs fine.
+	var fcmClient *fcm.Client
+	if cfg.FirebaseProjectID != "" && cfg.FirebaseServiceAccountFile != "" {
+		client, err := fcm.NewClientFromServiceAccountFile(ctx, cfg.FirebaseProjectID, cfg.FirebaseServiceAccountFile)
+		if err != nil {
+			log.Warn().Err(err).Msg("FCM not configured correctly — push notifications disabled")
+		} else {
+			fcmClient = client
+		}
+	}
+	deviceTokenRepo := repository.NewDeviceTokenRepository(queries)
+	pushService := services.NewPushService(deviceTokenRepo, fcmClient, log)
+	deviceHandler := handlers.NewDeviceHandler(pushService)
+
 	garageRepo := repository.NewGarageRepository(queries)
 	garageSvc := services.NewGarageService(garageRepo)
 	garageHandler := handlers.NewGarageHandler(garageSvc)
 
 	requestRepo := repository.NewServiceRequestRepository(queries)
-	requestSvc := services.NewServiceRequestService(requestRepo, garageRepo, hub, log)
+	requestSvc := services.NewServiceRequestService(requestRepo, garageRepo, hub, pushService, log)
 	requestHandler := handlers.NewServiceRequestHandler(requestSvc)
 
 	offerRepo := repository.NewOfferRepository(pool, queries)
-	offerSvc := services.NewOfferService(offerRepo, requestRepo, garageRepo, hub, log)
+	offerSvc := services.NewOfferService(offerRepo, requestRepo, garageRepo, hub, pushService, log)
 	offerHandler := handlers.NewOfferHandler(offerSvc)
 
 	bookingRepo := repository.NewBookingRepository(queries)
-	bookingSvc := services.NewBookingService(bookingRepo, requestRepo, hub, log)
+	bookingSvc := services.NewBookingService(bookingRepo, requestRepo, hub, pushService, log)
 	bookingHandler := handlers.NewBookingHandler(bookingSvc)
 
 	mechanicRepo := repository.NewMechanicRepository(queries)
@@ -91,10 +109,23 @@ func main() {
 
 	adminHandler := handlers.NewAdminHandler(garageSvc)
 
-	flwClient := flutterwave.NewClient(cfg.FlutterwaveSecretKey, cfg.FlutterwaveBaseURL, cfg.FlutterwaveWebhookHash)
+	var mpesaClient *mpesa.Client
+	if cfg.MpesaConsumerKey != "" && cfg.MpesaShortcode != "" {
+		mpesaClient = mpesa.NewClient(cfg.MpesaConsumerKey, cfg.MpesaConsumerSecret, cfg.MpesaShortcode, cfg.MpesaPasskey, cfg.MpesaBaseURL, cfg.MpesaCallbackURL)
+	} else {
+		log.Warn().Msg("M-Pesa not configured — /payments/initiate with provider=mpesa will fail until MPESA_* env vars are set")
+	}
+
+	var selcomClient *selcom.Client
+	if cfg.SelcomVendorID != "" && cfg.SelcomAPIKey != "" {
+		selcomClient = selcom.NewClient(cfg.SelcomVendorID, cfg.SelcomAPIKey, cfg.SelcomAPISecret, cfg.SelcomBaseURL)
+	} else {
+		log.Warn().Msg("Selcom not configured — /payments/initiate with provider=selcom will fail until SELCOM_* env vars are set")
+	}
+
 	paymentRepo := repository.NewPaymentRepository(queries)
-	paymentSvc := services.NewPaymentService(paymentRepo, bookingRepo, offerRepo, requestRepo, flwClient, hub, log)
-	paymentHandler := handlers.NewPaymentHandler(paymentSvc)
+	paymentSvc := services.NewPaymentService(paymentRepo, bookingRepo, offerRepo, requestRepo, mpesaClient, selcomClient, hub, log)
+	paymentHandler := handlers.NewPaymentHandler(paymentSvc, cfg.MpesaCallbackSecret)
 
 	reviewRepo := repository.NewReviewRepository(queries)
 	reviewSvc := services.NewReviewService(reviewRepo, bookingRepo, requestRepo)
@@ -112,6 +143,7 @@ func main() {
 		Admin:          adminHandler,
 		Payment:        paymentHandler,
 		Review:         reviewHandler,
+		Device:         deviceHandler,
 		ProfileRepo:    profileRepo,
 		WSManager:      hub,
 		JWTSecret:      cfg.SupabaseJWTSecret,

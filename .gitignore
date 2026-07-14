@@ -1,0 +1,22 @@
+# Local environment (never commit real secrets — use .env.example as the template)
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+/bin/
+/dist/
+*.exe
+
+# Go
+/vendor/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Supabase local dev
+supabase/.temp/
