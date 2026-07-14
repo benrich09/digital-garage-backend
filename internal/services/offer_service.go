@@ -85,7 +85,7 @@ func (s *OfferService) Accept(ctx context.Context, offerID uuid.UUID, callerID u
 		s.push.Notify(ctx, garage.OwnerID, "Offer accepted!", "A car owner accepted your offer — the job is now booked.", map[string]string{
 			"service_request_id": result.ServiceRequestID.String(),
 			"booking_id":         result.BookingID.String(),
-			"type":               ws.EventRequestAccepted,
+			"type":               string(ws.EventRequestAccepted),
 		})
 	} else {
 		s.log.Warn().Err(err).Msg("could not load garage to notify of accepted offer")

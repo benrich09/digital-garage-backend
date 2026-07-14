@@ -104,7 +104,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	mechanic.Patch("/mechanics/me/location", d.Mechanic.UpdateLocation)
 
 	// admin-only — backs the web admin dashboard
-	admin := auth.Group("/admin", middleware.RequireRole(models.RoleAdmin))
+	admin := auth.Group("/admin", middleware.RequireRole(models.RoleAdmin, models.RoleSuperAdmin))
 	admin.Get("/garages/pending", d.Admin.ListPendingGarages)
 	admin.Post("/garages/:id/approve", d.Admin.ApproveGarage)
 	admin.Post("/garages/:id/reject", d.Admin.RejectGarage)

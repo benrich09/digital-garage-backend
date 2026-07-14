@@ -78,7 +78,7 @@ func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, i
 		// terminated" (this request's Step 8 requirement).
 		s.push.Notify(ctx, g.OwnerID, "New service request nearby", in.Description, map[string]string{
 			"service_request_id": id.String(),
-			"type":                ws.EventNewRequestMatch,
+			"type":               string(ws.EventNewRequestMatch),
 		})
 	}
 

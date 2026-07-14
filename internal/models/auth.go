@@ -16,6 +16,7 @@ const (
 	RoleGarageOwner = "garage_owner"
 	RoleMechanic    = "mechanic"
 	RoleAdmin       = "admin"
+	RoleSuperAdmin  = "superadmin"
 )
 
 // GarageVerificationInput is what a garage_owner submits after signing
