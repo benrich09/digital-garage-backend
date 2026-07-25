@@ -20,3 +20,4 @@
 
 # Supabase local dev
 supabase/.temp/
+.env
