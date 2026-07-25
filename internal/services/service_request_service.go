@@ -33,12 +33,11 @@ type ServiceRequestService struct {
 	repo    repository.ServiceRequestRepository
 	garages repository.GarageRepository
 	hub     *ws.Manager
-	push    *PushService
 	log     zerolog.Logger
 }
 
-func NewServiceRequestService(repo repository.ServiceRequestRepository, garages repository.GarageRepository, hub *ws.Manager, push *PushService, log zerolog.Logger) *ServiceRequestService {
-	return &ServiceRequestService{repo: repo, garages: garages, hub: hub, push: push, log: log}
+func NewServiceRequestService(repo repository.ServiceRequestRepository, garages repository.GarageRepository, hub *ws.Manager, log zerolog.Logger) *ServiceRequestService {
+	return &ServiceRequestService{repo: repo, garages: garages, hub: hub, log: log}
 }
 
 func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, in models.CreateServiceRequestInput) (uuid.UUID, string, error) {
@@ -71,15 +70,6 @@ func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, i
 			DistanceKM:       distKM,
 			Description:      in.Description,
 		}))
-
-		// Push reaches the garage owner even if their app is fully
-		// closed — the WebSocket event above only reaches an open
-		// connection, so both are needed for "even when backgrounded or
-		// terminated" (this request's Step 8 requirement).
-		s.push.Notify(ctx, g.OwnerID, "New service request nearby", in.Description, map[string]string{
-			"service_request_id": id.String(),
-			"type":               string(ws.EventNewRequestMatch),
-		})
 	}
 
 	return id, status, nil

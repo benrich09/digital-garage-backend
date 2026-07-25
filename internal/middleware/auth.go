@@ -84,6 +84,13 @@ func LoadProfile(repo repository.ProfileRepository) fiber.Handler {
 		if err != nil {
 			return apierr.JSON(c, fiber.StatusForbidden, "profile not found")
 		}
+		if !user.IsActive {
+			// Checked on every request (not just at login) so a
+			// superadmin suspending someone takes effect immediately —
+			// their existing access token stays otherwise valid until it
+			// expires, so this is the only place that actually stops them.
+			return apierr.JSON(c, fiber.StatusForbidden, "this account has been suspended")
+		}
 
 		c.Locals(localAuthUserKey, user)
 		return c.Next()

@@ -24,12 +24,11 @@ type BookingService struct {
 	bookings repository.BookingRepository
 	requests repository.ServiceRequestRepository
 	hub      *ws.Manager
-	push     *PushService
 	log      zerolog.Logger
 }
 
-func NewBookingService(bookings repository.BookingRepository, requests repository.ServiceRequestRepository, hub *ws.Manager, push *PushService, log zerolog.Logger) *BookingService {
-	return &BookingService{bookings: bookings, requests: requests, hub: hub, push: push, log: log}
+func NewBookingService(bookings repository.BookingRepository, requests repository.ServiceRequestRepository, hub *ws.Manager, log zerolog.Logger) *BookingService {
+	return &BookingService{bookings: bookings, requests: requests, hub: hub, log: log}
 }
 
 func (s *BookingService) GetByRequest(ctx context.Context, requestID uuid.UUID) (models.Booking, error) {
@@ -89,11 +88,6 @@ func (s *BookingService) SetStatus(ctx context.Context, bookingID uuid.UUID, new
 			BookingID:        bookingID.String(),
 			Status:           newStatus,
 		}))
-		s.push.Notify(ctx, carOwnerID, "Job status update", fmt.Sprintf("Your service request is now: %s", newStatus), map[string]string{
-			"service_request_id": booking.ServiceRequestID.String(),
-			"booking_id":         bookingID.String(),
-			"type":               string(evtType),
-		})
 	}
 
 	s.log.Info().Str("booking_id", bookingID.String()).Str("to", newStatus).Msg("booking transitioned")

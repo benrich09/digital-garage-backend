@@ -9,6 +9,7 @@ type AuthUser struct {
 	ID       uuid.UUID
 	Role     string
 	FullName string
+	IsActive bool
 }
 
 const (

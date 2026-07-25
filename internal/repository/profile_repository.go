@@ -25,5 +25,5 @@ func (r *profileRepository) GetRole(ctx context.Context, id uuid.UUID) (models.A
 	if err != nil {
 		return models.AuthUser{}, err
 	}
-	return models.AuthUser{ID: row.ID, Role: row.Role, FullName: row.FullName}, nil
+	return models.AuthUser{ID: row.ID, Role: row.Role, FullName: row.FullName, IsActive: row.IsActive}, nil
 }

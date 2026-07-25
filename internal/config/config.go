@@ -44,7 +44,8 @@ type Config struct {
 	// Go backend trusts a token's `sub` claim as the authenticated
 	// profile id once the signature checks out — no round-trip to
 	// Supabase needed per request.
-	SupabaseJWTSecret string
+	SupabaseJWTSecret  string
+	CORSAllowedOrigins string
 
 	LogLevel string // "debug" | "info" | "warn" | "error"
 
@@ -54,31 +55,6 @@ type Config struct {
 	// is one of two mobile money rails this app supports. CallbackURL
 	// must be a publicly reachable HTTPS URL pointing at this API's
 	// /webhooks/mpesa route — Daraja will not call back to localhost.
-	MpesaConsumerKey    string
-	MpesaConsumerSecret string
-	MpesaShortcode      string
-	MpesaPasskey        string
-	MpesaBaseURL        string // sandbox: https://sandbox.safaricom.co.ke, prod: https://api.safaricom.co.ke
-	MpesaCallbackURL    string
-	// MpesaCallbackSecret is our own shared secret appended to the
-	// callback URL (e.g. ?secret=...), since Daraja doesn't sign its
-	// callback payloads the way Selcom does.
-	MpesaCallbackSecret string
-
-	// Selcom is the second mobile money rail (aggregates additional
-	// networks/wallets beyond what Daraja directly supports in TZ).
-	SelcomVendorID  string
-	SelcomAPIKey    string
-	SelcomAPISecret string
-	SelcomBaseURL   string // sandbox: https://apigwtest.selcommobile.com, prod: https://apigw.selcommobile.com
-
-	// Firebase Cloud Messaging (push notifications). ServiceAccountFile
-	// is a path to the JSON key downloaded from Firebase Console ->
-	// Project Settings -> Service Accounts -> Generate new private key.
-	// Leave FirebaseProjectID empty to run without push configured
-	// (PushService no-ops rather than erroring) — handy for local dev.
-	FirebaseProjectID          string
-	FirebaseServiceAccountFile string
 }
 
 // Load reads configuration from environment variables (optionally backed
@@ -93,6 +69,7 @@ func Load() (*Config, error) {
 	v.SetDefault("DB_MIN_CONNS", 1)
 	v.SetDefault("LOG_LEVEL", "info")
 	v.SetDefault("SHUTDOWN_TIMEOUT_SECONDS", 15)
+	v.SetDefault("CORS_ALLOWED_ORIGINS", "*")
 	v.SetDefault("MPESA_BASE_URL", "https://sandbox.safaricom.co.ke")
 	v.SetDefault("SELCOM_BASE_URL", "https://apigwtest.selcommobile.com")
 
@@ -108,29 +85,17 @@ func Load() (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	cfg := &Config{
-		Env:                        v.GetString("ENV"),
-		Port:                       v.GetString("PORT"),
-		DatabaseURL:                v.GetString("DATABASE_URL"),
-		DBMaxConns:                 v.GetInt32("DB_MAX_CONNS"),
-		DBMinConns:                 v.GetInt32("DB_MIN_CONNS"),
-		SupabaseServiceRoleKey:     v.GetString("SUPABASE_SERVICE_ROLE_KEY"),
-		SupabaseURL:                v.GetString("SUPABASE_URL"),
-		SupabaseJWTSecret:          v.GetString("SUPABASE_JWT_SECRET"),
-		LogLevel:                   v.GetString("LOG_LEVEL"),
-		ShutdownTimeout:            time.Duration(v.GetInt("SHUTDOWN_TIMEOUT_SECONDS")) * time.Second,
-		MpesaConsumerKey:           v.GetString("MPESA_CONSUMER_KEY"),
-		MpesaConsumerSecret:        v.GetString("MPESA_CONSUMER_SECRET"),
-		MpesaShortcode:             v.GetString("MPESA_SHORTCODE"),
-		MpesaPasskey:               v.GetString("MPESA_PASSKEY"),
-		MpesaBaseURL:               v.GetString("MPESA_BASE_URL"),
-		MpesaCallbackURL:           v.GetString("MPESA_CALLBACK_URL"),
-		MpesaCallbackSecret:        v.GetString("MPESA_CALLBACK_SECRET"),
-		SelcomVendorID:             v.GetString("SELCOM_VENDOR_ID"),
-		SelcomAPIKey:               v.GetString("SELCOM_API_KEY"),
-		SelcomAPISecret:            v.GetString("SELCOM_API_SECRET"),
-		SelcomBaseURL:              v.GetString("SELCOM_BASE_URL"),
-		FirebaseProjectID:          v.GetString("FIREBASE_PROJECT_ID"),
-		FirebaseServiceAccountFile: v.GetString("FIREBASE_SERVICE_ACCOUNT_FILE"),
+		Env:                    v.GetString("ENV"),
+		Port:                   v.GetString("PORT"),
+		DatabaseURL:            v.GetString("DATABASE_URL"),
+		DBMaxConns:             v.GetInt32("DB_MAX_CONNS"),
+		DBMinConns:             v.GetInt32("DB_MIN_CONNS"),
+		SupabaseServiceRoleKey: v.GetString("SUPABASE_SERVICE_ROLE_KEY"),
+		SupabaseURL:            v.GetString("SUPABASE_URL"),
+		SupabaseJWTSecret:      v.GetString("SUPABASE_JWT_SECRET"),
+		CORSAllowedOrigins:     v.GetString("CORS_ALLOWED_ORIGINS"),
+		LogLevel:               v.GetString("LOG_LEVEL"),
+		ShutdownTimeout:        time.Duration(v.GetInt("SHUTDOWN_TIMEOUT_SECONDS")) * time.Second,
 	}
 
 	if cfg.DatabaseURL == "" {

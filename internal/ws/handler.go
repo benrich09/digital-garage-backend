@@ -66,7 +66,8 @@ func UpgradeCheck(jwtSecret string) fiber.Handler {
 }
 
 // Handler is the actual upgraded-connection loop. Register with:
-//   app.Get("/ws", ws.UpgradeCheck(secret), websocket.New(ws.Handler(manager, log)))
+//
+//	app.Get("/ws", ws.UpgradeCheck(secret), websocket.New(ws.Handler(manager, log)))
 func Handler(mgr *Manager, log zerolog.Logger) func(*websocket.Conn) {
 	return func(c *websocket.Conn) {
 		userID, _ := c.Locals("ws_user_id").(string)

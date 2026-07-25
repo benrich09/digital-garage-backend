@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	swagger "github.com/gofiber/swagger"
 	fiberws "github.com/gofiber/websocket/v2"
@@ -37,12 +38,19 @@ type Deps struct {
 	Booking        *BookingHandler
 	Mechanic       *MechanicHandler
 	Admin          *AdminHandler
-	Payment        *PaymentHandler
+	Commission     *CommissionHandler
 	Review         *ReviewHandler
-	Device         *DeviceHandler
 	ProfileRepo    repository.ProfileRepository
 	WSManager      *ws.Manager
 	JWTSecret      string
+	// CORSAllowedOrigins is a comma-separated list of origins allowed to
+	// call this API from a browser (web admin dashboard, and the
+	// car-owner/provider apps' web builds — native/mobile builds aren't
+	// subject to CORS at all, only browsers enforce it). Defaults to "*"
+	// for easy local/trial testing; set a real comma-separated list of
+	// your actual deployed origins in production (see CORS_ALLOWED_ORIGINS
+	// in .env.example).
+	CORSAllowedOrigins string
 }
 
 func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
@@ -53,7 +61,23 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	app.Use(recover.New())
 	app.Use(applog.FiberMiddleware(log))
 
+	allowedOrigins := d.CORSAllowedOrigins
+	if allowedOrigins == "" {
+		allowedOrigins = "*"
+	}
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     allowedOrigins,
+		AllowMethods:     "GET,POST,PATCH,PUT,DELETE,OPTIONS",
+		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
+		AllowCredentials: allowedOrigins != "*", // browsers reject credentials+wildcard together
+	}))
+
 	app.Get("/healthz", d.Health.Get)
+	// Silences the browser's automatic favicon request — this is a pure
+	// API with no icon of its own; without this it falls through to a
+	// protected route and 401s, which is harmless but noisy in the
+	// console during web development.
+	app.Get("/favicon.ico", func(c *fiber.Ctx) error { return c.SendStatus(fiber.StatusNoContent) })
 	app.Get("/swagger/*", swagger.HandlerDefault)
 
 	// --- WebSocket -------------------------------------------------
@@ -64,24 +88,19 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	garages := app.Group("/garages")
 	garages.Get("/nearby", d.Garage.ListNearby)
 
-	// M-Pesa (Daraja) and Selcom call these directly — no user JWT to
-	// check. Each handler verifies its own provider-specific secret
-	// instead. Must stay outside the `auth` group below.
-	app.Post("/webhooks/mpesa", d.Payment.MpesaCallback)
-	app.Post("/webhooks/selcom", d.Payment.SelcomWebhook)
-
 	// --- Authenticated (any role) -------------------------------------
 	auth := app.Group("", middleware.RequireAuth(d.JWTSecret), middleware.LoadProfile(d.ProfileRepo))
-
-	auth.Post("/devices/register", d.Device.Register)
-	auth.Post("/devices/unregister", d.Device.Unregister)
 
 	// car_owner routes
 	carOwner := auth.Group("", middleware.RequireRole(models.RoleCarOwner))
 	carOwner.Post("/service-requests", d.ServiceRequest.Create)
 	carOwner.Get("/service-requests/mine", d.ServiceRequest.ListMine)
 	carOwner.Post("/offers/:offer_id/accept", d.Offer.Accept)
-	carOwner.Post("/payments/initiate", d.Payment.Initiate)
+	// The platform no longer takes payment. The car owner pays the
+	// provider directly and attests to it here — this confirm call is
+	// the single event that books the platform's 5% commission.
+	carOwner.Post("/transactions/:id/confirm", d.Commission.Confirm)
+	carOwner.Post("/transactions/:id/dispute", d.Commission.Dispute)
 	carOwner.Post("/reviews", d.Review.Create)
 
 	// shared read across roles (car owner viewing their own request,
@@ -91,6 +110,14 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	auth.Get("/service-requests/:id/booking", d.Booking.GetByRequest)
 
 	// garage_owner routes
+	// Provider-side commission routes. Mechanics as well as garage
+	// owners record jobs and owe commission, so these hang off a group
+	// that admits both rather than off garageOwner.
+	provider := auth.Group("", middleware.RequireRole(models.RoleGarageOwner, models.RoleMechanic))
+	provider.Post("/transactions", d.Commission.RecordService)
+	provider.Get("/providers/me/balance", d.Commission.MyBalance)
+	provider.Post("/settlements/:id/submit", d.Commission.SubmitSettlement)
+
 	garageOwner := auth.Group("", middleware.RequireRole(models.RoleGarageOwner))
 	garageOwner.Post("/garage-owner/verify", d.Garage.SubmitVerification)
 	garageOwner.Post("/service-requests/:id/offers", d.Offer.Create)
@@ -105,6 +132,8 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 
 	// admin-only — backs the web admin dashboard
 	admin := auth.Group("/admin", middleware.RequireRole(models.RoleAdmin, models.RoleSuperAdmin))
+	admin.Get("/debts", d.Commission.ListDebtors)
+	admin.Post("/settlements/:id/verify", d.Commission.VerifySettlement)
 	admin.Get("/garages/pending", d.Admin.ListPendingGarages)
 	admin.Post("/garages/:id/approve", d.Admin.ApproveGarage)
 	admin.Post("/garages/:id/reject", d.Admin.RejectGarage)

@@ -19,11 +19,17 @@ import "time"
 type EventType string
 
 const (
-	EventNewRequestMatch  EventType = "new_request_match"  // -> nearby garages, when a car owner creates a request
-	EventOfferReceived    EventType = "offer_received"      // -> car owner, when a garage submits an offer
-	EventRequestAccepted  EventType = "request_accepted"    // -> garage/mechanic, when their offer is accepted
-	EventStatusUpdate     EventType = "status_update"       // -> car owner, mechanic location/status changes during a job
-	EventJobCompleted     EventType = "job_completed"       // -> car owner + garage, when a booking is marked completed
+	EventNewRequestMatch EventType = "new_request_match" // -> nearby garages, when a car owner creates a request
+	EventOfferReceived   EventType = "offer_received"    // -> car owner, when a garage submits an offer
+	EventRequestAccepted EventType = "request_accepted"  // -> garage/mechanic, when their offer is accepted
+	EventStatusUpdate    EventType = "status_update"     // -> car owner, mechanic location/status changes during a job
+	EventJobCompleted    EventType = "job_completed"     // -> car owner + garage, when a booking is marked completed
+
+	// Commission/settlement events (migration 0013). The platform never
+	// holds funds, so these announce record-keeping moves, not transfers.
+	EventConfirmationRequested EventType = "confirmation_requested" // -> car owner, provider recorded a service they must confirm
+	EventCommissionBooked      EventType = "commission_booked"      // -> provider, car owner confirmed; commission now owed
+	EventSettlementVerified    EventType = "settlement_verified"    // -> provider, admin verified their settlement payment
 )
 
 // Event is the single envelope every WebSocket message uses, so clients
@@ -75,4 +81,22 @@ type StatusUpdatePayload struct {
 type JobCompletedPayload struct {
 	ServiceRequestID string `json:"service_request_id"`
 	BookingID        string `json:"booking_id"`
+}
+
+type ConfirmationRequestedPayload struct {
+	TransactionID string  `json:"transaction_id"`
+	ServiceName   string  `json:"service_name"`
+	Amount        float64 `json:"amount"`
+	Currency      string  `json:"currency,omitempty"`
+}
+
+type CommissionBookedPayload struct {
+	TransactionID string  `json:"transaction_id"`
+	GrossAmount   float64 `json:"gross_amount"`
+	Commission    float64 `json:"commission"`
+}
+
+type SettlementVerifiedPayload struct {
+	SettlementID string  `json:"settlement_id"`
+	Amount       float64 `json:"amount"`
 }

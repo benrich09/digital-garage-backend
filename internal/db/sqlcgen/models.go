@@ -31,19 +31,19 @@ type ListNearbyGaragesRow struct {
 }
 
 type GetGarageRow struct {
-	ID                  uuid.UUID
-	OwnerID             uuid.UUID
-	Name                string
-	Description         *string
-	Address             *string
-	Phone               *string
-	IsVerified          bool
-	IsActive            bool
-	VerificationStatus  string
-	LicenseNumber       *string
-	Latitude            float64
-	Longitude           float64
-	CreatedAt           time.Time
+	ID                 uuid.UUID
+	OwnerID            uuid.UUID
+	Name               string
+	Description        *string
+	Address            *string
+	Phone              *string
+	IsVerified         bool
+	IsActive           bool
+	VerificationStatus string
+	LicenseNumber      *string
+	Latitude           float64
+	Longitude          float64
+	CreatedAt          time.Time
 }
 
 type CreateGarageRow struct {
@@ -190,10 +190,10 @@ type GetMechanicByProfileIDRow struct {
 // --- Payments ------------------------------------------------------------
 
 type CreatePaymentRow struct {
-	ID             uuid.UUID
-	Status         string
-	ProviderTxRef  *string
-	CreatedAt      time.Time
+	ID            uuid.UUID
+	Status        string
+	ProviderTxRef *string
+	CreatedAt     time.Time
 }
 
 type Payment struct {
