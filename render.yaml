@@ -1,0 +1,40 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Commit this file to the repo root, then in Render: New -> Blueprint,
+# point it at this repo, and Render provisions the service below.
+#
+# Secrets use `sync: false`: Render will PROMPT for each value on first
+# deploy and store it encrypted, so nothing sensitive lives in Git. Fill
+# them from your .env (which must NOT be committed — see .dockerignore).
+services:
+  - type: web
+    name: digital-garage-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    # The app serves /healthz; Render uses this for zero-downtime deploys
+    # and to know the container came up.
+    healthCheckPath: /healthz
+    # Do NOT set PORT here. Render injects $PORT and cfg.Load() reads it.
+    envVars:
+      # --- Supabase ---
+      # DATABASE_URL MUST be the Supabase *pooler* string (IPv4). The
+      # direct db.<ref>.supabase.co host is IPv6-only and unreachable
+      # from Render's free egress.
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+
+      # --- App ---
+      - key: ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      # Lock CORS to your real web origins in production instead of "*".
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false

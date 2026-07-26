@@ -1,0 +1,20 @@
+# Keep secrets and local cruft out of the Docker build context. Without
+# this, `COPY . .` in the Dockerfile bakes your .env into the image.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+*.md
+Makefile
+docker-compose.yml
+render.yaml
+
+# local build artifacts / editor noise
+/out
+/bin
+*.log
+.DS_Store
+.vscode/
+.idea/
