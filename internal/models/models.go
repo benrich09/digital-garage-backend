@@ -98,30 +98,6 @@ type Booking struct {
 	CreatedAt        time.Time  `json:"created_at"`
 }
 
-// --- Payments ------------------------------------------------------------
-
-type Payment struct {
-	ID            uuid.UUID  `json:"id"`
-	BookingID     uuid.UUID  `json:"booking_id"`
-	Amount        string     `json:"amount"`
-	Currency      string     `json:"currency"`
-	Status        string     `json:"status"`
-	Provider      string     `json:"provider"`
-	ProviderTxRef *string    `json:"provider_tx_ref,omitempty"`
-	PaidAt        *time.Time `json:"paid_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-}
-
-// InitiatePaymentInput is what the car owner's app POSTs to start a
-// mobile money charge for a completed booking. PhoneNumber is the
-// mobile money line to prompt (e.g. 07XXXXXXXX) — may differ from the
-// account's login phone.
-type InitiatePaymentInput struct {
-	BookingID   string `json:"booking_id"`
-	PhoneNumber string `json:"phone_number"`
-	Provider    string `json:"provider"` // "mpesa" | "selcom"
-}
-
 // --- Reviews ------------------------------------------------------------
 
 type Review struct {
