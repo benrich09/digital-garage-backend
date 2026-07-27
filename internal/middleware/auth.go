@@ -19,8 +19,8 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/yourorg/digital-garage/internal/auth"
 	"github.com/yourorg/digital-garage/internal/models"
 	"github.com/yourorg/digital-garage/internal/repository"
 	"github.com/yourorg/digital-garage/pkg/apierr"
@@ -32,9 +32,10 @@ const (
 )
 
 // RequireAuth validates the Supabase access token sent as
-// "Authorization: Bearer <token>" (issued by Supabase Auth after
-// phone/OTP verification) and stores the token's `sub` as a Fiber local.
-func RequireAuth(jwtSecret string) fiber.Handler {
+// "Authorization: Bearer <token>" (issued by Supabase Auth) and stores
+// the token's `sub` as a Fiber local. Verification goes through the
+// project's JWKS (ES256) with an HS256 fallback — see internal/auth.
+func RequireAuth(verifier *auth.TokenVerifier) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		header := c.Get("Authorization")
 		if !strings.HasPrefix(header, "Bearer ") {
@@ -42,14 +43,8 @@ func RequireAuth(jwtSecret string) fiber.Handler {
 		}
 		raw := strings.TrimPrefix(header, "Bearer ")
 
-		claims := jwt.MapClaims{}
-		token, err := jwt.ParseWithClaims(raw, claims, func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, jwt.ErrTokenSignatureInvalid
-			}
-			return []byte(jwtSecret), nil
-		})
-		if err != nil || !token.Valid {
+		claims, err := verifier.Parse(raw)
+		if err != nil {
 			return apierr.JSON(c, fiber.StatusUnauthorized, "invalid or expired token")
 		}
 

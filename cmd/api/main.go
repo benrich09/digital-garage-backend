@@ -26,6 +26,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/yourorg/digital-garage/internal/auth"
 	"github.com/yourorg/digital-garage/internal/config"
 	"github.com/yourorg/digital-garage/internal/db"
 	"github.com/yourorg/digital-garage/internal/db/sqlcgen"
@@ -119,7 +120,7 @@ func main() {
 		Review:             reviewHandler,
 		ProfileRepo:        profileRepo,
 		WSManager:          hub,
-		JWTSecret:          cfg.SupabaseJWTSecret,
+		Verifier:           auth.NewTokenVerifier(cfg.SupabaseURL, cfg.SupabaseJWTSecret),
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
 	}, log)
 

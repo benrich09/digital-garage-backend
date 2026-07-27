@@ -7,6 +7,7 @@ import (
 	swagger "github.com/gofiber/swagger"
 	fiberws "github.com/gofiber/websocket/v2"
 	"github.com/rs/zerolog"
+	"github.com/yourorg/digital-garage/internal/auth"
 	applog "github.com/yourorg/digital-garage/internal/logger"
 	"github.com/yourorg/digital-garage/internal/middleware"
 	"github.com/yourorg/digital-garage/internal/models"
@@ -42,7 +43,7 @@ type Deps struct {
 	Review         *ReviewHandler
 	ProfileRepo    repository.ProfileRepository
 	WSManager      *ws.Manager
-	JWTSecret      string
+	Verifier       *auth.TokenVerifier
 	// CORSAllowedOrigins is a comma-separated list of origins allowed to
 	// call this API from a browser (web admin dashboard, and the
 	// car-owner/provider apps' web builds — native/mobile builds aren't
@@ -81,7 +82,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	app.Get("/swagger/*", swagger.HandlerDefault)
 
 	// --- WebSocket -------------------------------------------------
-	app.Use("/ws", ws.UpgradeCheck(d.JWTSecret))
+	app.Use("/ws", ws.UpgradeCheck(d.Verifier))
 	app.Get("/ws", fiberws.New(ws.Handler(d.WSManager, log)))
 
 	// --- Public / low-privilege ---------------------------------------
@@ -89,7 +90,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	garages.Get("/nearby", d.Garage.ListNearby)
 
 	// --- Authenticated (any role) -------------------------------------
-	auth := app.Group("", middleware.RequireAuth(d.JWTSecret), middleware.LoadProfile(d.ProfileRepo))
+	auth := app.Group("", middleware.RequireAuth(d.Verifier), middleware.LoadProfile(d.ProfileRepo))
 
 	// car_owner routes
 	carOwner := auth.Group("", middleware.RequireRole(models.RoleCarOwner))

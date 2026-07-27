@@ -5,8 +5,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog"
+	"github.com/yourorg/digital-garage/internal/auth"
 )
 
 // NOTE ON LIBRARY CHOICE: the ask was for gorilla/websocket specifically.
@@ -27,7 +27,7 @@ import (
 // route: it validates the JWT from the query string and stashes the
 // user id in fiber.Locals so the handler below can read it after the
 // protocol upgrade (headers are gone at that point, only Locals persist).
-func UpgradeCheck(jwtSecret string) fiber.Handler {
+func UpgradeCheck(verifier *auth.TokenVerifier) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if !websocket.IsWebSocketUpgrade(c) {
 			return fiber.ErrUpgradeRequired
@@ -37,21 +37,15 @@ func UpgradeCheck(jwtSecret string) fiber.Handler {
 		if token == "" {
 			// also accept Authorization header for non-browser clients
 			// (Flutter's ws client can set headers on native platforms)
-			auth := c.Get("Authorization")
-			token = strings.TrimPrefix(auth, "Bearer ")
+			authHeader := c.Get("Authorization")
+			token = strings.TrimPrefix(authHeader, "Bearer ")
 		}
 		if token == "" {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing token")
 		}
 
-		claims := jwt.MapClaims{}
-		parsed, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, jwt.ErrTokenSignatureInvalid
-			}
-			return []byte(jwtSecret), nil
-		})
-		if err != nil || !parsed.Valid {
+		claims, err := verifier.Parse(token)
+		if err != nil {
 			return fiber.NewError(fiber.StatusUnauthorized, "invalid or expired token")
 		}
 
