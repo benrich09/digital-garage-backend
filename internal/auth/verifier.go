@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"strings"
@@ -54,7 +55,18 @@ func NewTokenVerifier(supabaseURL, sharedSecret string) *TokenVerifier {
 		client:       &http.Client{Timeout: 10 * time.Second},
 		keys:         map[string]interface{}{},
 	}
-	_ = v.refresh() // best-effort warm-up
+	if strings.TrimSpace(supabaseURL) == "" {
+		log.Printf("auth: WARNING — SUPABASE_URL is empty; the backend cannot verify Supabase tokens and will reject every request. Set SUPABASE_URL on the server.")
+		return v
+	}
+	if err := v.refresh(); err != nil {
+		log.Printf("auth: WARNING — initial JWKS fetch from %s failed: %v (will retry on first request)", v.jwksURL, err)
+	} else {
+		v.mu.RLock()
+		n := len(v.keys)
+		v.mu.RUnlock()
+		log.Printf("auth: loaded %d signing key(s) from %s", n, v.jwksURL)
+	}
 	return v
 }
 
