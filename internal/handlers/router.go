@@ -117,6 +117,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	provider := auth.Group("", middleware.RequireRole(models.RoleGarageOwner, models.RoleMechanic))
 	provider.Post("/transactions", d.Commission.RecordService)
 	provider.Get("/providers/me/balance", d.Commission.MyBalance)
+	provider.Get("/provider/open-requests", d.ServiceRequest.ListOpen)
 	provider.Post("/settlements/:id/submit", d.Commission.SubmitSettlement)
 
 	garageOwner := auth.Group("", middleware.RequireRole(models.RoleGarageOwner))

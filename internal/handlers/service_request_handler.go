@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"strconv"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/yourorg/digital-garage/internal/middleware"
@@ -86,8 +88,34 @@ func (h *ServiceRequestHandler) ListMine(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"service_requests": requests})
 }
 
-// Get godoc
-// @Summary      Get a service request by ID
+// ListOpen godoc
+// @Summary      Browse open (pending) requests near a point
+// @Description  Providers call this on load to see requests created while
+// @Description  they were offline. lat/lng are the provider's garage or
+// @Description  current location; radius_km is optional (defaults server-side).
+// @Tags         service-requests
+// @Security     BearerAuth
+// @Produce      json
+// @Param        lat        query  number  true   "Latitude"
+// @Param        lng        query  number  true   "Longitude"
+// @Param        radius_km  query  number  false  "Search radius in km"
+// @Success      200  {object}  map[string][]models.OpenServiceRequest
+// @Router       /provider/open-requests [get]
+func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
+	lat, err1 := strconv.ParseFloat(c.Query("lat"), 64)
+	lng, err2 := strconv.ParseFloat(c.Query("lng"), 64)
+	if err1 != nil || err2 != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "lat and lng query params are required")
+	}
+	radiusKM, _ := strconv.ParseFloat(c.Query("radius_km"), 64) // 0 -> server default
+
+	requests, err := h.svc.BrowseOpen(c.Context(), lat, lng, radiusKM, 25)
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusInternalServerError, "failed to list open requests")
+	}
+	return c.JSON(fiber.Map{"service_requests": requests})
+}
+
 // @Tags         service-requests
 // @Security     BearerAuth
 // @Produce      json

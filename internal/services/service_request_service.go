@@ -83,6 +83,19 @@ func (s *ServiceRequestService) ListMine(ctx context.Context, ownerID uuid.UUID)
 	return s.repo.ListByOwner(ctx, ownerID, 50)
 }
 
+// BrowseOpen returns pending requests near a point (the provider's garage
+// or current location). This is the "catch up on work I missed while
+// offline" companion to the live new_request_match WebSocket event.
+func (s *ServiceRequestService) BrowseOpen(ctx context.Context, lat, lng, radiusKM float64, limit int32) ([]models.OpenServiceRequest, error) {
+	if radiusKM <= 0 {
+		radiusKM = matchRadiusKM
+	}
+	if limit <= 0 {
+		limit = 25
+	}
+	return s.repo.ListOpenNear(ctx, lat, lng, geo.KMToMeters(radiusKM), limit)
+}
+
 // Transition moves a request to newStatus if, and only if, that move is
 // legal from its current status. Everything here is application-level
 // validation; the actual row update still goes through RLS in Postgres,

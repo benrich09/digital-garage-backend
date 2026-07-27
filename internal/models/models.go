@@ -45,6 +45,19 @@ type ServiceRequest struct {
 	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
 }
 
+// OpenServiceRequest is the lightweight shape a provider sees when
+// browsing open (pending) work near them — no car-owner PII, just what's
+// needed to decide whether to send an offer, plus the distance.
+type OpenServiceRequest struct {
+	ID          uuid.UUID `json:"id"`
+	Description *string   `json:"description,omitempty"`
+	Status      string    `json:"status"`
+	Latitude    float64   `json:"latitude"`
+	Longitude   float64   `json:"longitude"`
+	DistanceKM  float64   `json:"distance_km"`
+	RequestedAt time.Time `json:"requested_at"`
+}
+
 // CreateServiceRequestInput is what the mobile app POSTs.
 type CreateServiceRequestInput struct {
 	VehicleID   uuid.UUID `json:"vehicle_id" binding:"required"`
