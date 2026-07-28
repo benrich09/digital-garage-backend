@@ -1,23 +1,4 @@
-// Command api is the single binary for the Digital Garage backend. It's
-// intentionally one process, one binary, no background worker pool, no
-// separate migration runner baked in — all of that keeps the footprint
-// small enough for a 1 vCPU / 1GB VM. Schema migrations are applied
-// separately via `supabase db push` (see supabase/migrations), not from
-// this binary, so the API process never needs elevated DB privileges.
-//
-// This single binary serves the car-owner app, the garage/mechanic app,
-// AND the web admin dashboard — they all hit the same REST + WebSocket
-// routes, differentiated only by the authenticated caller's role (see
-// internal/middleware/rbac.go). There's no separate "admin API".
-//
-// @title           Digital Garage API
-// @version         1.0
-// @description     Backend for the Digital Garage marketplace: car owners, garages/mechanics, and the web admin dashboard all talk to this one API.
-// @BasePath        /
-// @securityDefinitions.apikey  BearerAuth
-// @in                          header
-// @name                        Authorization
-// @description                 Type "Bearer" followed by a space and the Supabase access token.
+
 package main
 
 import (
