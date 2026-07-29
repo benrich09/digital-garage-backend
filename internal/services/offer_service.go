@@ -53,12 +53,30 @@ func (s *OfferService) ListForRequest(ctx context.Context, requestID uuid.UUID) 
 }
 
 // ProviderApprove creates an offer from the garage/mechanic and immediately
-// accepts it (booking created). Used for Approve/Deny UX instead of a
-// multi-step quote race when the provider is the one locking the job.
+// accepts it (booking created). Used for Approve/Deny UX.
 func (s *OfferService) ProviderApprove(ctx context.Context, in models.CreateOfferInput, callerID uuid.UUID) (models.AcceptOfferResult, error) {
+	if in.Price == "" {
+		in.Price = "0"
+	}
+	if in.Currency == "" {
+		in.Currency = "TZS"
+	}
 	id, _, err := s.offers.Create(ctx, in)
 	if err != nil {
-		return models.AcceptOfferResult{}, fmt.Errorf("create offer: %w", err)
+		// Duplicate offer for same request+garage → load existing pending and accept
+		existing, listErr := s.offers.ListForRequest(ctx, in.ServiceRequestID)
+		if listErr == nil {
+			for _, o := range existing {
+				if o.Status == "pending" && (o.GarageID == in.GarageID || in.GarageID == uuid.Nil) {
+					id = o.ID
+					err = nil
+					break
+				}
+			}
+		}
+		if err != nil {
+			return models.AcceptOfferResult{}, fmt.Errorf("create offer: %w", err)
+		}
 	}
 	result, err := s.offers.Accept(ctx, id)
 	if err != nil {
