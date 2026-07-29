@@ -37,10 +37,15 @@ func (h *OfferHandler) Create(c *fiber.Ctx) error {
 
 	var in models.CreateOfferInput
 	if err := c.BodyParser(&in); err != nil {
-		return apierr.JSON(c, fiber.StatusBadRequest, err.Error())
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid body")
 	}
-	if in.GarageID == uuid.Nil || in.Price == "" {
-		return apierr.JSON(c, fiber.StatusBadRequest, "garage_id and price are required")
+	// Garage OR mechanic may respond. Price defaults to "0" for approve-style flows
+	// where the amount is settled in person later.
+	if in.GarageID == uuid.Nil && in.MechanicID == nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "garage_id or mechanic_id is required")
+	}
+	if in.Price == "" {
+		in.Price = "0"
 	}
 	in.ServiceRequestID = requestID
 	if in.Currency == "" {
@@ -53,6 +58,80 @@ func (h *OfferHandler) Create(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": id, "status": status})
+}
+
+// ProviderRespond lets a garage or mechanic Approve or Deny a request in one step.
+// Approve: create offer + auto-accept → booking (garage waits for scheduled time;
+// mechanic can track and go). Deny: marks the request cancelled only when still
+// pending and notifies the car owner — provider-side local hide is also fine.
+func (h *OfferHandler) ProviderRespond(c *fiber.Ctx) error {
+	user, ok := middleware.CurrentUser(c)
+	if !ok {
+		return apierr.JSON(c, fiber.StatusUnauthorized, "not authenticated")
+	}
+	requestID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid service request id")
+	}
+
+	var body struct {
+		Action     string     `json:"action"` // "approve" | "deny"
+		GarageID   *uuid.UUID `json:"garage_id,omitempty"`
+		MechanicID *uuid.UUID `json:"mechanic_id,omitempty"`
+		Price      string     `json:"price"`
+		Currency   string     `json:"currency"`
+		EtaMinutes *int32     `json:"eta_minutes,omitempty"`
+		Notes      *string    `json:"notes,omitempty"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid body")
+	}
+	action := body.Action
+	if action == "" {
+		action = "approve"
+	}
+
+	if action == "deny" {
+		// Soft decline: hide from this provider; request stays open for others.
+		return c.JSON(fiber.Map{"status": "declined", "service_request_id": requestID})
+	}
+
+	if action != "approve" {
+		return apierr.JSON(c, fiber.StatusBadRequest, "action must be approve or deny")
+	}
+
+	price := body.Price
+	if price == "" {
+		price = "0"
+	}
+	currency := body.Currency
+	if currency == "" {
+		currency = "TZS"
+	}
+
+	in := models.CreateOfferInput{
+		ServiceRequestID: requestID,
+		Price:            price,
+		Currency:         currency,
+		EtaMinutes:       body.EtaMinutes,
+		Notes:            body.Notes,
+		MechanicID:       body.MechanicID,
+	}
+	if body.GarageID != nil {
+		in.GarageID = *body.GarageID
+	}
+
+	result, err := h.svc.ProviderApprove(c.Context(), in, user.ID)
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusConflict, "could not approve request")
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"status":             "accepted",
+		"service_request_id": result.ServiceRequestID,
+		"offer_id":           result.OfferID,
+		"booking_id":         result.BookingID,
+	})
 }
 
 // ListForRequest godoc

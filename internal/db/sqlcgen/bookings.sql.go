@@ -10,7 +10,11 @@ import (
 
 const createBooking = `-- name: CreateBooking :one
 insert into bookings (service_request_id, offer_id, garage_id, mechanic_id, scheduled_time)
-values ($1, $2, $3, $4, $5)
+values (
+  $1, $2,
+  nullif($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid),
+  $4, $5
+)
 returning id, status, created_at
 `
 

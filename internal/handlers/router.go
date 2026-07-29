@@ -130,6 +130,8 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	fieldRoles.Patch("/bookings/:id/status", d.Booking.SetStatus)
 	fieldRoles.Patch("/mechanics/me/location", d.Mechanic.UpdateLocation)
 	fieldRoles.Post("/service-requests/:id/offers", d.Offer.Create)
+	// One-tap Approve / Deny for garage bookings and mechanic requests.
+	fieldRoles.Post("/service-requests/:id/provider-respond", d.Offer.ProviderRespond)
 
 	// admin-only — backs the web admin dashboard
 	admin := auth.Group("/admin", middleware.RequireRole(models.RoleAdmin, models.RoleSuperAdmin))

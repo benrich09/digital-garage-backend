@@ -9,7 +9,11 @@ import (
 
 const createOffer = `-- name: CreateOffer :one
 insert into offers (service_request_id, garage_id, mechanic_id, price, currency, eta_minutes, notes)
-values ($1, $2, $3, $4, $5, $6, $7)
+values (
+  $1,
+  nullif($2::uuid, '00000000-0000-0000-0000-000000000000'::uuid),
+  $3, $4, $5, $6, $7
+)
 returning id, status, created_at
 `
 

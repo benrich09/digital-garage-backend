@@ -52,6 +52,31 @@ func (s *OfferService) ListForRequest(ctx context.Context, requestID uuid.UUID) 
 	return s.offers.ListForRequest(ctx, requestID)
 }
 
+// ProviderApprove creates an offer from the garage/mechanic and immediately
+// accepts it (booking created). Used for Approve/Deny UX instead of a
+// multi-step quote race when the provider is the one locking the job.
+func (s *OfferService) ProviderApprove(ctx context.Context, in models.CreateOfferInput, callerID uuid.UUID) (models.AcceptOfferResult, error) {
+	id, _, err := s.offers.Create(ctx, in)
+	if err != nil {
+		return models.AcceptOfferResult{}, fmt.Errorf("create offer: %w", err)
+	}
+	result, err := s.offers.Accept(ctx, id)
+	if err != nil {
+		return models.AcceptOfferResult{}, fmt.Errorf("accept offer: %w", err)
+	}
+
+	req, err := s.requests.Get(ctx, in.ServiceRequestID)
+	if err == nil {
+		s.hub.SendToUser(req.CarOwnerID.String(), ws.NewEvent(ws.EventRequestAccepted, ws.RequestAcceptedPayload{
+			ServiceRequestID: result.ServiceRequestID.String(),
+			OfferID:          result.OfferID.String(),
+			BookingID:        result.BookingID.String(),
+		}))
+	}
+	_ = callerID
+	return result, nil
+}
+
 // Accept is called by the car owner. Locks the request (via the
 // underlying transaction: other offers rejected, booking created,
 // request status -> accepted) and notifies the winning garage (and
