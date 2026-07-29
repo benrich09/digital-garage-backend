@@ -20,6 +20,8 @@ type ServiceRequestRepository interface {
 	// while they're connected).
 	ListOpenNear(ctx context.Context, lat, lng, radiusMeters float64, limit int32) ([]models.OpenServiceRequest, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string) error
+	Cancel(ctx context.Context, id, ownerID uuid.UUID) error
+	ListNearbyMechanics(ctx context.Context, lat, lng, radiusMeters float64, limit int32) ([]sqlcgen.ListNearbyAvailableMechanicsRow, error)
 }
 
 type serviceRequestRepository struct {
@@ -125,14 +127,35 @@ func (r *serviceRequestRepository) ListOpenNear(ctx context.Context, lat, lng, r
 	out := make([]models.OpenServiceRequest, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, models.OpenServiceRequest{
-			ID:          row.ID,
-			Description: row.Description,
-			Status:      row.Status,
-			Latitude:    row.Latitude,
-			Longitude:   row.Longitude,
-			DistanceKM:  row.DistanceMeters / 1000.0,
-			RequestedAt: row.RequestedAt,
+			ID:             row.ID,
+			Description:    row.Description,
+			Status:         row.Status,
+			CategoryID:     row.CategoryID,
+			CategoryName:   row.CategoryName,
+			Latitude:       row.Latitude,
+			Longitude:      row.Longitude,
+			DistanceKM:     row.DistanceMeters / 1000.0,
+			RequestedAt:    row.RequestedAt,
+			OwnerID:        row.OwnerID,
+			OwnerName:      row.OwnerName,
+			OwnerPhone:     row.OwnerPhone,
+			OwnerAvatarURL: row.OwnerAvatarURL,
+			VehicleID:      row.VehicleID,
+			VehicleMake:    row.VehicleMake,
+			VehicleModel:   row.VehicleModel,
+			VehicleYear:    row.VehicleYear,
+			VehiclePlate:   row.VehiclePlate,
 		})
 	}
 	return out, nil
+}
+
+func (r *serviceRequestRepository) Cancel(ctx context.Context, id, ownerID uuid.UUID) error {
+	return r.q.CancelServiceRequest(ctx, sqlcgen.CancelServiceRequestParams{ID: id, CarOwnerID: ownerID})
+}
+
+func (r *serviceRequestRepository) ListNearbyMechanics(ctx context.Context, lat, lng, radiusMeters float64, limit int32) ([]sqlcgen.ListNearbyAvailableMechanicsRow, error) {
+	return r.q.ListNearbyAvailableMechanics(ctx, sqlcgen.ListNearbyAvailableMechanicsParams{
+		Lat: lat, Lng: lng, RadiusMeters: radiusMeters, MaxResults: limit,
+	})
 }

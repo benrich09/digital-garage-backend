@@ -96,6 +96,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	carOwner := auth.Group("", middleware.RequireRole(models.RoleCarOwner))
 	carOwner.Post("/service-requests", d.ServiceRequest.Create)
 	carOwner.Get("/service-requests/mine", d.ServiceRequest.ListMine)
+	carOwner.Post("/service-requests/:id/cancel", d.ServiceRequest.Cancel)
 	carOwner.Post("/offers/:offer_id/accept", d.Offer.Accept)
 	// The platform no longer takes payment. The car owner pays the
 	// provider directly and attests to it here — this confirm call is
@@ -139,6 +140,9 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	admin.Get("/garages/pending", d.Admin.ListPendingGarages)
 	admin.Post("/garages/:id/approve", d.Admin.ApproveGarage)
 	admin.Post("/garages/:id/reject", d.Admin.RejectGarage)
+	admin.Delete("/garages/:id", d.Admin.DeleteGarage)
+	admin.Delete("/mechanics/:id", d.Admin.DeleteMechanic)
+	admin.Get("/service-requests", d.Admin.ListServiceRequests)
 
 	return app
 }

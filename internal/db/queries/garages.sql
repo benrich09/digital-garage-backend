@@ -95,3 +95,10 @@ values (
   ST_SetSRID(ST_MakePoint(sqlc.arg(lng)::float8, sqlc.arg(lat)::float8), 4326)::geography
 )
 returning id, created_at;
+
+
+-- name: DeactivateGarage :exec
+update garages set is_active = false, updated_at = now() where id = $1;
+
+-- name: DeleteMechanicByID :exec
+delete from mechanics where id = $1;

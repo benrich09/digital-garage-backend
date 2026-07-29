@@ -64,3 +64,18 @@ func (s *GarageService) Approve(ctx context.Context, garageID, adminID uuid.UUID
 func (s *GarageService) Reject(ctx context.Context, garageID, adminID uuid.UUID) error {
 	return s.repo.SetVerificationStatus(ctx, garageID, adminID, "rejected")
 }
+
+
+func (s *GarageService) Deactivate(ctx context.Context, id uuid.UUID) error {
+	if err := s.repo.Deactivate(ctx, id); err != nil {
+		return fmt.Errorf("deactivate garage: %w", err)
+	}
+	return nil
+}
+
+func (s *GarageService) DeleteMechanic(ctx context.Context, id uuid.UUID) error {
+	if err := s.repo.DeleteMechanic(ctx, id); err != nil {
+		return fmt.Errorf("delete mechanic: %w", err)
+	}
+	return nil
+}

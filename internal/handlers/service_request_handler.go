@@ -136,3 +136,30 @@ func (h *ServiceRequestHandler) Get(c *fiber.Ctx) error {
 
 	return c.JSON(req)
 }
+
+
+// Cancel godoc
+// @Summary      Cancel own pending/quoted service request
+// @Tags         service-requests
+// @Security     BearerAuth
+// @Param        id   path      string  true  "Service Request ID"
+// @Success      200  {object}  map[string]interface{}
+// @Router       /service-requests/{id}/cancel [post]
+func (h *ServiceRequestHandler) Cancel(c *fiber.Ctx) error {
+	userIDStr, ok := middleware.UserID(c)
+	if !ok {
+		return apierr.JSON(c, fiber.StatusUnauthorized, "not authenticated")
+	}
+	ownerID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusUnauthorized, "invalid user id in token")
+	}
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid id")
+	}
+	if err := h.svc.Cancel(c.Context(), id, ownerID); err != nil {
+		return apierr.JSON(c, fiber.StatusConflict, "could not cancel — request may already be accepted or not yours")
+	}
+	return c.JSON(fiber.Map{"id": id, "status": "cancelled"})
+}

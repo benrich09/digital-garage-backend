@@ -20,6 +20,8 @@ type GarageRepository interface {
 	AddServiceCategory(ctx context.Context, garageID, categoryID uuid.UUID) error
 	ListPending(ctx context.Context) ([]models.PendingGarage, error)
 	SetVerificationStatus(ctx context.Context, id, reviewerID uuid.UUID, status string) error
+	Deactivate(ctx context.Context, id uuid.UUID) error
+	DeleteMechanic(ctx context.Context, id uuid.UUID) error
 }
 
 type garageRepository struct {
@@ -114,4 +116,12 @@ func (r *garageRepository) ListPending(ctx context.Context) ([]models.PendingGar
 
 func (r *garageRepository) SetVerificationStatus(ctx context.Context, id, reviewerID uuid.UUID, status string) error {
 	return r.q.SetGarageVerificationStatus(ctx, id, status, reviewerID)
+}
+
+func (r *garageRepository) Deactivate(ctx context.Context, id uuid.UUID) error {
+	return r.q.DeactivateGarage(ctx, id)
+}
+
+func (r *garageRepository) DeleteMechanic(ctx context.Context, id uuid.UUID) error {
+	return r.q.DeleteMechanicByID(ctx, id)
 }

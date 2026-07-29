@@ -190,3 +190,22 @@ func (q *Queries) AddGarageServiceCategory(ctx context.Context, garageID, catego
 	_, err := q.db.Exec(ctx, addGarageServiceCategory, garageID, categoryID)
 	return err
 }
+
+
+const deactivateGarage = `-- name: DeactivateGarage :exec
+update garages set is_active = false, updated_at = now() where id = $1
+`
+
+func (q *Queries) DeactivateGarage(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deactivateGarage, id)
+	return err
+}
+
+const deleteMechanicByID = `-- name: DeleteMechanicByID :exec
+delete from mechanics where id = $1
+`
+
+func (q *Queries) DeleteMechanicByID(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteMechanicByID, id)
+	return err
+}

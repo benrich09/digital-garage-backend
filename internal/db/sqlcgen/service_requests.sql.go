@@ -3,9 +3,12 @@ package sqlcgen
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 )
+
+var ErrNoRows = errors.New("no rows")
 
 const createServiceRequest = `-- name: CreateServiceRequest :one
 insert into service_requests (car_owner_id, vehicle_id, category_id, description, pickup_location, photo_urls)
@@ -80,14 +83,27 @@ func (q *Queries) ListServiceRequestsByOwner(ctx context.Context, arg ListServic
 
 const listOpenServiceRequestsNear = `-- name: ListOpenServiceRequestsNear :many
 select
-  sr.id, sr.description, sr.status, sr.requested_at,
+  sr.id, sr.description, sr.status, sr.requested_at, sr.category_id,
   ST_Y(sr.pickup_location::geometry) as latitude,
   ST_X(sr.pickup_location::geometry) as longitude,
   ST_Distance(
     sr.pickup_location,
     ST_SetSRID(ST_MakePoint($1::float8, $2::float8), 4326)::geography
-  ) as distance_meters
+  ) as distance_meters,
+  p.id as owner_id,
+  p.full_name as owner_name,
+  p.phone as owner_phone,
+  p.avatar_url as owner_avatar_url,
+  v.id as vehicle_id,
+  v.make as vehicle_make,
+  v.model as vehicle_model,
+  v.year as vehicle_year,
+  v.plate_number as vehicle_plate,
+  sc.name as category_name
 from service_requests sr
+join profiles p on p.id = sr.car_owner_id
+join vehicles v on v.id = sr.vehicle_id
+left join service_categories sc on sc.id = sr.category_id
 where sr.status = 'pending'
   and ST_DWithin(
     sr.pickup_location,
@@ -115,7 +131,13 @@ func (q *Queries) ListOpenServiceRequestsNear(ctx context.Context, arg ListOpenS
 	var items []ListOpenServiceRequestsNearRow
 	for rows.Next() {
 		var i ListOpenServiceRequestsNearRow
-		if err := rows.Scan(&i.ID, &i.Description, &i.Status, &i.RequestedAt, &i.Latitude, &i.Longitude, &i.DistanceMeters); err != nil {
+		if err := rows.Scan(
+			&i.ID, &i.Description, &i.Status, &i.RequestedAt, &i.CategoryID,
+			&i.Latitude, &i.Longitude, &i.DistanceMeters,
+			&i.OwnerID, &i.OwnerName, &i.OwnerPhone, &i.OwnerAvatarURL,
+			&i.VehicleID, &i.VehicleMake, &i.VehicleModel, &i.VehicleYear, &i.VehiclePlate,
+			&i.CategoryName,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -132,4 +154,75 @@ where id = $1
 func (q *Queries) UpdateServiceRequestStatus(ctx context.Context, id uuid.UUID, status string) error {
 	_, err := q.db.Exec(ctx, updateServiceRequestStatus, id, status)
 	return err
+}
+
+const cancelServiceRequest = `-- name: CancelServiceRequest :exec
+update service_requests
+set status = 'cancelled', updated_at = now()
+where id = $1
+  and car_owner_id = $2
+  and status in ('pending', 'quoted')
+`
+
+type CancelServiceRequestParams struct {
+	ID         uuid.UUID
+	CarOwnerID uuid.UUID
+}
+
+func (q *Queries) CancelServiceRequest(ctx context.Context, arg CancelServiceRequestParams) error {
+	tag, err := q.db.Exec(ctx, cancelServiceRequest, arg.ID, arg.CarOwnerID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNoRows
+	}
+	return nil
+}
+
+const listNearbyAvailableMechanics = `-- name: ListNearbyAvailableMechanics :many
+select
+  m.id as mechanic_id,
+  m.profile_id,
+  m.garage_id,
+  ST_Y(m.current_location::geometry) as latitude,
+  ST_X(m.current_location::geometry) as longitude,
+  ST_Distance(
+    m.current_location,
+    ST_SetSRID(ST_MakePoint($1::float8, $2::float8), 4326)::geography
+  ) as distance_meters
+from mechanics m
+where m.is_available = true
+  and m.current_location is not null
+  and ST_DWithin(
+    m.current_location,
+    ST_SetSRID(ST_MakePoint($1::float8, $2::float8), 4326)::geography,
+    $3::float8
+  )
+order by distance_meters asc
+limit $4::int
+`
+
+type ListNearbyAvailableMechanicsParams struct {
+	Lng          float64
+	Lat          float64
+	RadiusMeters float64
+	MaxResults   int32
+}
+
+func (q *Queries) ListNearbyAvailableMechanics(ctx context.Context, arg ListNearbyAvailableMechanicsParams) ([]ListNearbyAvailableMechanicsRow, error) {
+	rows, err := q.db.Query(ctx, listNearbyAvailableMechanics, arg.Lng, arg.Lat, arg.RadiusMeters, arg.MaxResults)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListNearbyAvailableMechanicsRow
+	for rows.Next() {
+		var i ListNearbyAvailableMechanicsRow
+		if err := rows.Scan(&i.MechanicID, &i.ProfileID, &i.GarageID, &i.Latitude, &i.Longitude, &i.DistanceMeters); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	return items, rows.Err()
 }

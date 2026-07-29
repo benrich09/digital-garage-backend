@@ -72,7 +72,34 @@ func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, i
 		}))
 	}
 
+	// Also fan out to available field mechanics near the request so
+	// independent mechanics (not only garage owners) see the job live.
+	mechanics, mErr := s.repo.ListNearbyMechanics(ctx, in.Latitude, in.Longitude, geo.KMToMeters(matchRadiusKM), 25)
+	if mErr != nil {
+		s.log.Warn().Err(mErr).Msg("nearby mechanic matching failed, request still created")
+	} else {
+		for _, m := range mechanics {
+			s.hub.SendToUser(m.ProfileID.String(), ws.NewEvent(ws.EventNewRequestMatch, ws.NewRequestMatchPayload{
+				ServiceRequestID: id.String(),
+				CategoryID:       in.CategoryID.String(),
+				Latitude:         in.Latitude,
+				Longitude:        in.Longitude,
+				DistanceKM:       m.DistanceMeters / 1000.0,
+				Description:      in.Description,
+			}))
+		}
+	}
+
 	return id, status, nil
+}
+
+// Cancel lets the car owner withdraw a pending/quoted request.
+func (s *ServiceRequestService) Cancel(ctx context.Context, id, ownerID uuid.UUID) error {
+	if err := s.repo.Cancel(ctx, id, ownerID); err != nil {
+		return fmt.Errorf("cancel service request: %w", err)
+	}
+	s.log.Info().Str("request_id", id.String()).Msg("service request cancelled by owner")
+	return nil
 }
 
 func (s *ServiceRequestService) Get(ctx context.Context, id uuid.UUID) (models.ServiceRequest, error) {

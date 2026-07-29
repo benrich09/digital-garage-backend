@@ -45,17 +45,28 @@ type ServiceRequest struct {
 	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
 }
 
-// OpenServiceRequest is the lightweight shape a provider sees when
-// browsing open (pending) work near them — no car-owner PII, just what's
-// needed to decide whether to send an offer, plus the distance.
+// OpenServiceRequest is what a provider sees when browsing open
+// (pending) work near them. Includes the car-owner profile and vehicle
+// so the provider can decide whether to send an offer.
 type OpenServiceRequest struct {
-	ID          uuid.UUID `json:"id"`
-	Description *string   `json:"description,omitempty"`
-	Status      string    `json:"status"`
-	Latitude    float64   `json:"latitude"`
-	Longitude   float64   `json:"longitude"`
-	DistanceKM  float64   `json:"distance_km"`
-	RequestedAt time.Time `json:"requested_at"`
+	ID           uuid.UUID `json:"id"`
+	Description  *string   `json:"description,omitempty"`
+	Status       string    `json:"status"`
+	CategoryID   uuid.UUID `json:"category_id"`
+	CategoryName *string   `json:"category_name,omitempty"`
+	Latitude     float64   `json:"latitude"`
+	Longitude    float64   `json:"longitude"`
+	DistanceKM   float64   `json:"distance_km"`
+	RequestedAt  time.Time `json:"requested_at"`
+	OwnerID        uuid.UUID `json:"owner_id"`
+	OwnerName      *string   `json:"owner_name,omitempty"`
+	OwnerPhone     *string   `json:"owner_phone,omitempty"`
+	OwnerAvatarURL *string   `json:"owner_avatar_url,omitempty"`
+	VehicleID    uuid.UUID `json:"vehicle_id"`
+	VehicleMake  *string   `json:"vehicle_make,omitempty"`
+	VehicleModel *string   `json:"vehicle_model,omitempty"`
+	VehicleYear  *int32    `json:"vehicle_year,omitempty"`
+	VehiclePlate *string   `json:"vehicle_plate,omitempty"`
 }
 
 // CreateServiceRequestInput is what the mobile app POSTs.

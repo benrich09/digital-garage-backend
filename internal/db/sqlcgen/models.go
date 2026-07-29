@@ -99,6 +99,26 @@ type ListOpenServiceRequestsNearRow struct {
 	Description    *string
 	Status         string
 	RequestedAt    time.Time
+	CategoryID     uuid.UUID
+	Latitude       float64
+	Longitude      float64
+	DistanceMeters float64
+	OwnerID        uuid.UUID
+	OwnerName      *string
+	OwnerPhone     *string
+	OwnerAvatarURL *string
+	VehicleID      uuid.UUID
+	VehicleMake    *string
+	VehicleModel   *string
+	VehicleYear    *int32
+	VehiclePlate   *string
+	CategoryName   *string
+}
+
+type ListNearbyAvailableMechanicsRow struct {
+	MechanicID     uuid.UUID
+	ProfileID      uuid.UUID
+	GarageID       *uuid.UUID
 	Latitude       float64
 	Longitude      float64
 	DistanceMeters float64
