@@ -123,15 +123,13 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 
 	garageOwner := auth.Group("", middleware.RequireRole(models.RoleGarageOwner))
 	garageOwner.Post("/garage-owner/verify", d.Garage.SubmitVerification)
-	garageOwner.Post("/service-requests/:id/offers", d.Offer.Create)
 
-	// garage_owner + mechanic routes
+	// garage_owner + mechanic — shared field work. Garage owners may also
+	// act as on-road assistants (location updates + quotes + status).
 	fieldRoles := auth.Group("", middleware.RequireRole(models.RoleGarageOwner, models.RoleMechanic))
 	fieldRoles.Patch("/bookings/:id/status", d.Booking.SetStatus)
-
-	// mechanic-only
-	mechanic := auth.Group("", middleware.RequireRole(models.RoleMechanic))
-	mechanic.Patch("/mechanics/me/location", d.Mechanic.UpdateLocation)
+	fieldRoles.Patch("/mechanics/me/location", d.Mechanic.UpdateLocation)
+	fieldRoles.Post("/service-requests/:id/offers", d.Offer.Create)
 
 	// admin-only — backs the web admin dashboard
 	admin := auth.Group("/admin", middleware.RequireRole(models.RoleAdmin, models.RoleSuperAdmin))
