@@ -20,7 +20,7 @@ import (
 // frozen onto each ledger entry at write time (see the
 // book_commission_on_confirm trigger), so changing this number never
 // rewrites what a provider already owes.
-const CommissionRate = 0.05
+const CommissionRate = 0.10
 
 // SettlementDueDay is the day of the following month by which a provider
 // must have settled the previous month's commission.

@@ -79,6 +79,14 @@ type CreateServiceRequestInput struct {
 	// PhotoURLs are Supabase Storage URLs the Flutter app already
 	// uploaded to directly — this API never proxies image bytes.
 	PhotoURLs []string `json:"photo_urls"`
+	// RequestKind: "garage_booking" | "mechanic_request"
+	RequestKind string `json:"request_kind"`
+	// LocationMode: "on_road" | "at_home" (mechanic requests)
+	LocationMode string `json:"location_mode"`
+	PreferredGarageID  *uuid.UUID `json:"preferred_garage_id"`
+	PreferredServiceID *uuid.UUID `json:"preferred_service_id"`
+	CarType            string     `json:"car_type"`
+	ScheduledAt        *string    `json:"scheduled_at"` // RFC3339
 }
 
 type Offer struct {

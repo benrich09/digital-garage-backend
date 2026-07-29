@@ -81,6 +81,7 @@ func (h *AdminHandler) RejectGarage(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"garage_id": garageID, "status": "rejected"})
 }
 
+
 // DeleteGarage soft-deletes / deactivates a garage (admin).
 func (h *AdminHandler) DeleteGarage(c *fiber.Ctx) error {
 	garageID, err := uuid.Parse(c.Params("id"))
