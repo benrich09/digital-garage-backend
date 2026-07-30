@@ -43,6 +43,11 @@ func (s *BookingService) SetStatus(ctx context.Context, bookingID uuid.UUID, new
 		return fmt.Errorf("load booking: %w", err)
 	}
 
+	// Idempotent: already at target status
+	if booking.Status == newStatus {
+		return nil
+	}
+
 	allowed := bookingTransitions[booking.Status]
 	ok := false
 	for _, st := range allowed {
@@ -50,6 +55,10 @@ func (s *BookingService) SetStatus(ctx context.Context, bookingID uuid.UUID, new
 			ok = true
 			break
 		}
+	}
+	// Also allow scheduled -> completed (single-step finish)
+	if !ok && booking.Status == "scheduled" && newStatus == "completed" {
+		ok = true
 	}
 	if !ok {
 		return fmt.Errorf("illegal booking transition: %s -> %s", booking.Status, newStatus)
