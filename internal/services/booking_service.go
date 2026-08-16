@@ -86,17 +86,31 @@ func (s *BookingService) SetStatus(ctx context.Context, bookingID uuid.UUID, new
 		carOwnerID = req.CarOwnerID
 	}
 
-	evtType := ws.EventStatusUpdate
-	if newStatus == "completed" {
-		evtType = ws.EventJobCompleted
+	// Reload so the WebSocket payload carries the freshly-stamped
+	// started_at / completed_at (SetBookingStatus set them). This is what
+	// lets the car owner run the same live service timer the provider
+	// sees, and show the final duration when the job completes.
+	updated, reloadErr := s.bookings.Get(ctx, bookingID)
+	if reloadErr != nil {
+		updated = booking
 	}
 
 	if carOwnerID != uuid.Nil {
-		s.hub.SendToUser(carOwnerID.String(), ws.NewEvent(evtType, ws.StatusUpdatePayload{
-			ServiceRequestID: booking.ServiceRequestID.String(),
-			BookingID:        bookingID.String(),
-			Status:           newStatus,
-		}))
+		if newStatus == "completed" {
+			s.hub.SendToUser(carOwnerID.String(), ws.NewEvent(ws.EventJobCompleted, ws.JobCompletedPayload{
+				ServiceRequestID: booking.ServiceRequestID.String(),
+				BookingID:        bookingID.String(),
+				StartedAt:        updated.StartedAt,
+				CompletedAt:      updated.CompletedAt,
+			}))
+		} else {
+			s.hub.SendToUser(carOwnerID.String(), ws.NewEvent(ws.EventStatusUpdate, ws.StatusUpdatePayload{
+				ServiceRequestID: booking.ServiceRequestID.String(),
+				BookingID:        bookingID.String(),
+				Status:           newStatus,
+				StartedAt:        updated.StartedAt,
+			}))
+		}
 	}
 
 	s.log.Info().Str("booking_id", bookingID.String()).Str("to", newStatus).Msg("booking transitioned")

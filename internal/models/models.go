@@ -49,24 +49,24 @@ type ServiceRequest struct {
 // (pending) work near them. Includes the car-owner profile and vehicle
 // so the provider can decide whether to send an offer.
 type OpenServiceRequest struct {
-	ID           uuid.UUID `json:"id"`
-	Description  *string   `json:"description,omitempty"`
-	Status       string    `json:"status"`
-	CategoryID   uuid.UUID `json:"category_id"`
-	CategoryName *string   `json:"category_name,omitempty"`
-	Latitude     float64   `json:"latitude"`
-	Longitude    float64   `json:"longitude"`
-	DistanceKM   float64   `json:"distance_km"`
-	RequestedAt  time.Time `json:"requested_at"`
+	ID             uuid.UUID `json:"id"`
+	Description    *string   `json:"description,omitempty"`
+	Status         string    `json:"status"`
+	CategoryID     uuid.UUID `json:"category_id"`
+	CategoryName   *string   `json:"category_name,omitempty"`
+	Latitude       float64   `json:"latitude"`
+	Longitude      float64   `json:"longitude"`
+	DistanceKM     float64   `json:"distance_km"`
+	RequestedAt    time.Time `json:"requested_at"`
 	OwnerID        uuid.UUID `json:"owner_id"`
 	OwnerName      *string   `json:"owner_name,omitempty"`
 	OwnerPhone     *string   `json:"owner_phone,omitempty"`
 	OwnerAvatarURL *string   `json:"owner_avatar_url,omitempty"`
-	VehicleID    uuid.UUID `json:"vehicle_id"`
-	VehicleMake  *string   `json:"vehicle_make,omitempty"`
-	VehicleModel *string   `json:"vehicle_model,omitempty"`
-	VehicleYear  *int32    `json:"vehicle_year,omitempty"`
-	VehiclePlate *string   `json:"vehicle_plate,omitempty"`
+	VehicleID      uuid.UUID `json:"vehicle_id"`
+	VehicleMake    *string   `json:"vehicle_make,omitempty"`
+	VehicleModel   *string   `json:"vehicle_model,omitempty"`
+	VehicleYear    *int32    `json:"vehicle_year,omitempty"`
+	VehiclePlate   *string   `json:"vehicle_plate,omitempty"`
 }
 
 // CreateServiceRequestInput is what the mobile app POSTs.
@@ -82,7 +82,7 @@ type CreateServiceRequestInput struct {
 	// RequestKind: "garage_booking" | "mechanic_request"
 	RequestKind string `json:"request_kind"`
 	// LocationMode: "on_road" | "at_home" (mechanic requests)
-	LocationMode string `json:"location_mode"`
+	LocationMode       string     `json:"location_mode"`
 	PreferredGarageID  *uuid.UUID `json:"preferred_garage_id"`
 	PreferredServiceID *uuid.UUID `json:"preferred_service_id"`
 	CarType            string     `json:"car_type"`
@@ -127,7 +127,15 @@ type Booking struct {
 	GarageID         uuid.UUID  `json:"garage_id"`
 	MechanicID       *uuid.UUID `json:"mechanic_id,omitempty"`
 	Status           string     `json:"status"`
-	CreatedAt        time.Time  `json:"created_at"`
+	// ScheduledTime is when a garage booking is due to start; StartedAt /
+	// CompletedAt are stamped by SetBookingStatus when the provider taps
+	// "Start service" / "Finish service". The apps compute the live
+	// service duration as (now|CompletedAt) - StartedAt, so surfacing
+	// these three is what powers the on-screen service timer.
+	ScheduledTime *time.Time `json:"scheduled_time,omitempty"`
+	StartedAt     *time.Time `json:"started_at,omitempty"`
+	CompletedAt   *time.Time `json:"completed_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
 }
 
 // --- Reviews ------------------------------------------------------------

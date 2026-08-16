@@ -76,11 +76,19 @@ type StatusUpdatePayload struct {
 	Status           string   `json:"status,omitempty"`
 	MechanicLat      *float64 `json:"mechanic_lat,omitempty"`
 	MechanicLng      *float64 `json:"mechanic_lng,omitempty"`
+	// StartedAt is set when the provider taps "Start service"; the car
+	// owner's app uses it to run the same live service timer the provider
+	// sees, so both sides agree on elapsed time.
+	StartedAt *time.Time `json:"started_at,omitempty"`
 }
 
 type JobCompletedPayload struct {
 	ServiceRequestID string `json:"service_request_id"`
 	BookingID        string `json:"booking_id"`
+	// StartedAt / CompletedAt let the car owner show the final service
+	// duration on the completion / payment screen without another fetch.
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
 type ConfirmationRequestedPayload struct {

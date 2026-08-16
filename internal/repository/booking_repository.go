@@ -29,7 +29,9 @@ func (r *bookingRepository) Get(ctx context.Context, id uuid.UUID) (models.Booki
 	}
 	return models.Booking{
 		ID: row.ID, ServiceRequestID: row.ServiceRequestID, OfferID: row.OfferID,
-		GarageID: row.GarageID, MechanicID: row.MechanicID, Status: row.Status, CreatedAt: row.CreatedAt,
+		GarageID: row.GarageID, MechanicID: row.MechanicID, Status: row.Status,
+		ScheduledTime: row.ScheduledTime, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt,
+		CreatedAt: row.CreatedAt,
 	}, nil
 }
 
@@ -40,7 +42,9 @@ func (r *bookingRepository) GetByServiceRequest(ctx context.Context, requestID u
 	}
 	return models.Booking{
 		ID: row.ID, ServiceRequestID: row.ServiceRequestID, OfferID: row.OfferID,
-		GarageID: row.GarageID, MechanicID: row.MechanicID, Status: row.Status, CreatedAt: row.CreatedAt,
+		GarageID: row.GarageID, MechanicID: row.MechanicID, Status: row.Status,
+		ScheduledTime: row.ScheduledTime, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt,
+		CreatedAt: row.CreatedAt,
 	}, nil
 }
 
