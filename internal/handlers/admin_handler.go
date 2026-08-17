@@ -5,6 +5,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yourorg/digital-garage/internal/middleware"
 	"github.com/yourorg/digital-garage/internal/services"
 	"github.com/yourorg/digital-garage/pkg/apierr"
@@ -17,6 +18,7 @@ type AdminHandler struct {
 	// Optional: service-request listing for the admin track board.
 	// Wired when available; list endpoints tolerate nil.
 	srSvc *services.ServiceRequestService
+	pool  *pgxpool.Pool
 }
 
 func NewAdminHandler(garageSvc *services.GarageService) *AdminHandler {
@@ -27,6 +29,60 @@ func (h *AdminHandler) WithServiceRequests(svc *services.ServiceRequestService) 
 	h.srSvc = svc
 	return h
 }
+
+func (h *AdminHandler) WithPool(pool *pgxpool.Pool) *AdminHandler {
+	h.pool = pool
+	return h
+}
+
+// DisableProvider sets profiles.is_active = false so the provider can no
+// longer log in or receive new work. Used when a provider accumulates
+// unpaid commission debt beyond the admin threshold.
+func (h *AdminHandler) DisableProvider(c *fiber.Ctx) error {
+	if h.pool == nil {
+		return apierr.JSON(c, fiber.StatusNotImplemented, "disable not wired")
+	}
+	providerID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid provider id")
+	}
+	tag, err := h.pool.Exec(c.Context(), `
+		update profiles
+		set is_active = false, updated_at = now()
+		where id = $1 and role in ('garage_owner', 'mechanic')
+	`, providerID)
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusInternalServerError, "failed to disable provider")
+	}
+	if tag.RowsAffected() == 0 {
+		return apierr.JSON(c, fiber.StatusNotFound, "provider not found or not a provider role")
+	}
+	return c.JSON(fiber.Map{"provider_id": providerID, "status": "disabled", "is_active": false})
+}
+
+// EnableProvider re-activates a previously disabled provider.
+func (h *AdminHandler) EnableProvider(c *fiber.Ctx) error {
+	if h.pool == nil {
+		return apierr.JSON(c, fiber.StatusNotImplemented, "enable not wired")
+	}
+	providerID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid provider id")
+	}
+	tag, err := h.pool.Exec(c.Context(), `
+		update profiles
+		set is_active = true, updated_at = now()
+		where id = $1 and role in ('garage_owner', 'mechanic')
+	`, providerID)
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusInternalServerError, "failed to enable provider")
+	}
+	if tag.RowsAffected() == 0 {
+		return apierr.JSON(c, fiber.StatusNotFound, "provider not found or not a provider role")
+	}
+	return c.JSON(fiber.Map{"provider_id": providerID, "status": "enabled", "is_active": true})
+}
+
 
 // ListPendingGarages godoc
 // @Summary      List garages awaiting verification

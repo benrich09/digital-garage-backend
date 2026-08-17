@@ -92,7 +92,15 @@ func (h *OfferHandler) ProviderRespond(c *fiber.Ctx) error {
 	}
 
 	if action == "deny" {
-		// Soft decline: hide from this provider; request stays open for others.
+		// Silent soft-decline: record so this provider is not re-notified,
+		// keep request open for other mechanics, never tell the car owner.
+		var reason *string
+		if body.Notes != nil && *body.Notes != "" {
+			reason = body.Notes
+		}
+		if err := h.svc.Decline(c.Context(), requestID, user.ID, reason); err != nil {
+			return apierr.JSON(c, fiber.StatusConflict, err.Error())
+		}
 		return c.JSON(fiber.Map{"status": "declined", "service_request_id": requestID})
 	}
 

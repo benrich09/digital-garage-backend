@@ -59,7 +59,7 @@ func main() {
 	requestHandler := handlers.NewServiceRequestHandler(requestSvc)
 
 	offerRepo := repository.NewOfferRepository(pool, queries)
-	offerSvc := services.NewOfferService(offerRepo, requestRepo, garageRepo, hub, log)
+	offerSvc := services.NewOfferService(offerRepo, requestRepo, garageRepo, hub, log).WithPool(pool)
 	offerHandler := handlers.NewOfferHandler(offerSvc)
 
 	bookingRepo := repository.NewBookingRepository(queries)
@@ -70,7 +70,7 @@ func main() {
 	mechanicSvc := services.NewMechanicService(mechanicRepo, bookingRepo, requestRepo, hub, log)
 	mechanicHandler := handlers.NewMechanicHandler(mechanicSvc)
 
-	adminHandler := handlers.NewAdminHandler(garageSvc)
+	adminHandler := handlers.NewAdminHandler(garageSvc).WithPool(pool)
 
 	// Payment gateways removed. The platform no longer moves money: car
 	// owners pay providers directly (cash / their own mobile money) and
