@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	"github.com/yourorg/digital-garage/internal/models"
 	"github.com/yourorg/digital-garage/internal/repository"
@@ -43,6 +44,7 @@ type CommissionService struct {
 	settlements repository.SettlementRepository
 	hub         *ws.Manager
 	log         zerolog.Logger
+	pool        *pgxpool.Pool
 }
 
 func NewCommissionService(
@@ -54,6 +56,45 @@ func NewCommissionService(
 ) *CommissionService {
 	return &CommissionService{txns: txns, ledger: ledger, settlements: settlements, hub: hub, log: log}
 }
+
+func (s *CommissionService) WithPool(pool *pgxpool.Pool) *CommissionService {
+	s.pool = pool
+	return s
+}
+
+// resolveCarOwner fills CarOwnerID from request_id or booking_id when the
+// client did not send it (common after finish-service when the request
+// payload is incomplete or RLS hid the column).
+func (s *CommissionService) resolveCarOwner(ctx context.Context, in *models.RecordServiceInput) error {
+	if in.CarOwnerID != uuid.Nil {
+		return nil
+	}
+	if s.pool == nil {
+		return fmt.Errorf("car_owner_id is required")
+	}
+	var ownerID uuid.UUID
+	if in.RequestID != nil && *in.RequestID != uuid.Nil {
+		err := s.pool.QueryRow(ctx, `select car_owner_id from service_requests where id = $1`, *in.RequestID).Scan(&ownerID)
+		if err == nil && ownerID != uuid.Nil {
+			in.CarOwnerID = ownerID
+			return nil
+		}
+	}
+	if in.BookingID != nil && *in.BookingID != uuid.Nil {
+		err := s.pool.QueryRow(ctx, `
+			select sr.car_owner_id
+			from bookings b
+			join service_requests sr on sr.id = b.service_request_id
+			where b.id = $1
+		`, *in.BookingID).Scan(&ownerID)
+		if err == nil && ownerID != uuid.Nil {
+			in.CarOwnerID = ownerID
+			return nil
+		}
+	}
+	return fmt.Errorf("could not resolve car_owner_id from request or booking")
+}
+
 
 // CommissionOn returns the platform's cut of a gross amount, rounded to
 // two decimals.
@@ -73,6 +114,9 @@ func (s *CommissionService) RecordService(
 	}
 	if in.ServiceName == "" {
 		return models.ServiceTransaction{}, fmt.Errorf("service_name is required")
+	}
+	if err := s.resolveCarOwner(ctx, &in); err != nil {
+		return models.ServiceTransaction{}, err
 	}
 
 	txn, err := s.txns.Create(ctx, models.ServiceTransaction{

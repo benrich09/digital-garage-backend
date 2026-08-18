@@ -80,7 +80,7 @@ func main() {
 	txnRepo := repository.NewServiceTransactionRepository(pool)
 	ledgerRepo := repository.NewCommissionLedgerRepository(pool)
 	settlementRepo := repository.NewSettlementRepository(pool)
-	commissionSvc := services.NewCommissionService(txnRepo, ledgerRepo, settlementRepo, hub, log)
+	commissionSvc := services.NewCommissionService(txnRepo, ledgerRepo, settlementRepo, hub, log).WithPool(pool)
 	commissionHandler := handlers.NewCommissionHandler(commissionSvc)
 
 	reviewRepo := repository.NewReviewRepository(queries)
