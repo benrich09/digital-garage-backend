@@ -27,7 +27,7 @@ var validTransitions = map[string][]string{
 // matchRadiusKM is the default radius used to find nearby garages when
 // a new request comes in. Not exposed as user input (yet) — a natural
 // next step is making this configurable per category or per city.
-const matchRadiusKM = 15.0
+const matchRadiusKM = 50.0
 
 type ServiceRequestService struct {
 	repo    repository.ServiceRequestRepository

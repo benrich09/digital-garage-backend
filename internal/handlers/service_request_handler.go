@@ -104,12 +104,17 @@ func (h *ServiceRequestHandler) ListMine(c *fiber.Ctx) error {
 func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 	lat, err1 := strconv.ParseFloat(c.Query("lat"), 64)
 	lng, err2 := strconv.ParseFloat(c.Query("lng"), 64)
+	// Default to a wide search around Dar es Salaam if the device has no GPS yet,
+	// so providers still see open work instead of an empty inbox.
 	if err1 != nil || err2 != nil {
-		return apierr.JSON(c, fiber.StatusBadRequest, "lat and lng query params are required")
+		lat, lng = -6.7924, 39.2083
 	}
-	radiusKM, _ := strconv.ParseFloat(c.Query("radius_km"), 64) // 0 -> server default
+	radiusKM, _ := strconv.ParseFloat(c.Query("radius_km"), 64)
+	if radiusKM <= 0 {
+		radiusKM = 100 // wide default so free-tier demos still match
+	}
 
-	requests, err := h.svc.BrowseOpen(c.Context(), lat, lng, radiusKM, 25)
+	requests, err := h.svc.BrowseOpen(c.Context(), lat, lng, radiusKM, 50)
 	if err != nil {
 		return apierr.JSON(c, fiber.StatusInternalServerError, "failed to list open requests")
 	}
