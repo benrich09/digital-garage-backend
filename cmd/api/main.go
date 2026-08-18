@@ -63,7 +63,7 @@ func main() {
 	offerHandler := handlers.NewOfferHandler(offerSvc)
 
 	bookingRepo := repository.NewBookingRepository(queries)
-	bookingSvc := services.NewBookingService(bookingRepo, requestRepo, hub, log)
+	bookingSvc := services.NewBookingService(bookingRepo, requestRepo, hub, log).WithPool(pool)
 	bookingHandler := handlers.NewBookingHandler(bookingSvc)
 
 	mechanicRepo := repository.NewMechanicRepository(queries)
@@ -82,6 +82,7 @@ func main() {
 	settlementRepo := repository.NewSettlementRepository(pool)
 	commissionSvc := services.NewCommissionService(txnRepo, ledgerRepo, settlementRepo, hub, log).WithPool(pool)
 	commissionHandler := handlers.NewCommissionHandler(commissionSvc)
+	bookingSvc.WithCommission(commissionSvc)
 
 	reviewRepo := repository.NewReviewRepository(queries)
 	reviewSvc := services.NewReviewService(reviewRepo, bookingRepo, requestRepo)

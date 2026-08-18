@@ -64,12 +64,56 @@ func (s *OfferService) ListForRequest(ctx context.Context, requestID uuid.UUID) 
 
 // ProviderApprove creates an offer from the garage/mechanic and immediately
 // accepts it (booking created). Used for Approve/Deny UX.
+//
+// Always attaches the caller's mechanic row (so active-jobs RLS + UI keep
+// the job visible) and fills price from provider_services when the client
+// sent 0 / empty — the agreed service rate, not a post-job amount.
 func (s *OfferService) ProviderApprove(ctx context.Context, in models.CreateOfferInput, callerID uuid.UUID) (models.AcceptOfferResult, error) {
+	if s.pool != nil {
+		// Resolve mechanic + garage for this caller so the booking is linked.
+		var mechID, garageID uuid.UUID
+		err := s.pool.QueryRow(ctx, `
+			select m.id, m.garage_id from mechanics m
+			where m.profile_id = $1
+			limit 1
+		`, callerID).Scan(&mechID, &garageID)
+		if err == nil {
+			if in.MechanicID == nil {
+				in.MechanicID = &mechID
+			}
+			if in.GarageID == uuid.Nil {
+				in.GarageID = garageID
+			}
+		}
+		if in.GarageID == uuid.Nil {
+			_ = s.pool.QueryRow(ctx, `
+				select id from garages where owner_id = $1 order by created_at asc limit 1
+			`, callerID).Scan(&in.GarageID)
+		}
+		// Prefer pre-listed service price when client sent 0 / empty.
+		if in.Price == "" || in.Price == "0" {
+			var price string
+			// Prefer a service marked for the request kind; otherwise any active price.
+			err := s.pool.QueryRow(ctx, `
+				select coalesce(ps.price::text, '0')
+				from provider_services ps
+				where ps.provider_id = $1 and ps.is_active = true
+				order by ps.is_roadside desc, ps.created_at desc
+				limit 1
+			`, callerID).Scan(&price)
+			if err == nil && price != "" && price != "0" {
+				in.Price = price
+			}
+		}
+	}
 	if in.Price == "" {
 		in.Price = "0"
 	}
 	if in.Currency == "" {
 		in.Currency = "TZS"
+	}
+	if in.GarageID == uuid.Nil {
+		return models.AcceptOfferResult{}, fmt.Errorf("garage_id is required — set up a garage profile or link a mechanic row")
 	}
 	id, _, err := s.offers.Create(ctx, in)
 	if err != nil {
