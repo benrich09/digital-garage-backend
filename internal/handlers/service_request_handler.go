@@ -102,6 +102,23 @@ func (h *ServiceRequestHandler) ListMine(c *fiber.Ctx) error {
 // @Success      200  {object}  map[string][]models.OpenServiceRequest
 // @Router       /provider/open-requests [get]
 func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
+	if user, ok := middleware.CurrentUser(c); ok {
+		role := user.Role
+		switch role {
+		case "Garage Owner", "garage-owner", "GarageOwner":
+			role = "garage_owner"
+		case "Mechanic", "MECHANIC":
+			role = "mechanic"
+		}
+		if role != "mechanic" && role != "garage_owner" && role != "admin" && role != "superadmin" {
+			// Don't 403 — return empty so the app shows "no jobs" instead of a crash.
+			return c.JSON(fiber.Map{
+				"service_requests": []any{},
+				"count":            0,
+				"hint":             "profile.role must be mechanic or garage_owner to receive jobs (current=" + user.Role + ")",
+			})
+		}
+	}
 	lat, err1 := strconv.ParseFloat(c.Query("lat"), 64)
 	lng, err2 := strconv.ParseFloat(c.Query("lng"), 64)
 	// Default to a wide search around Dar es Salaam if the device has no GPS yet,

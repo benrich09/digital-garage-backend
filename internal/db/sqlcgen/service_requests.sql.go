@@ -107,7 +107,7 @@ from service_requests sr
 join profiles p on p.id = sr.car_owner_id
 left join vehicles v on v.id = sr.vehicle_id
 left join service_categories sc on sc.id = sr.category_id
-where sr.status = 'pending'
+where sr.status in ('pending', 'quoted')
 order by distance_meters asc nulls last, sr.requested_at desc
 limit $4::int
 `
@@ -190,8 +190,7 @@ select
     ST_SetSRID(ST_MakePoint($1::float8, $2::float8), 4326)::geography
   ) as distance_meters
 from mechanics m
-where m.is_available = true
-  and m.current_location is not null
+where m.current_location is not null
   and ST_DWithin(
     m.current_location,
     ST_SetSRID(ST_MakePoint($1::float8, $2::float8), 4326)::geography,

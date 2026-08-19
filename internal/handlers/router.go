@@ -92,6 +92,11 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	// --- Authenticated (any role) -------------------------------------
 	auth := app.Group("", middleware.RequireAuth(d.Verifier), middleware.LoadProfile(d.ProfileRepo))
 
+	// Open inbox for providers — auth only (no hard role gate). Role is still
+	// checked softly in the handler so a mis-tagged profile can still see work
+	// during demos; car owners get an empty list rather than a 403.
+	auth.Get("/provider/open-requests", d.ServiceRequest.ListOpen)
+
 	// car_owner routes
 	carOwner := auth.Group("", middleware.RequireRole(models.RoleCarOwner))
 	carOwner.Post("/service-requests", d.ServiceRequest.Create)
@@ -118,7 +123,6 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	provider := auth.Group("", middleware.RequireRole(models.RoleGarageOwner, models.RoleMechanic))
 	provider.Post("/transactions", d.Commission.RecordService)
 	provider.Get("/providers/me/balance", d.Commission.MyBalance)
-	provider.Get("/provider/open-requests", d.ServiceRequest.ListOpen)
 	provider.Post("/settlements/:id/submit", d.Commission.SubmitSettlement)
 
 	garageOwner := auth.Group("", middleware.RequireRole(models.RoleGarageOwner))

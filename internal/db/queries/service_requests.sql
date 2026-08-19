@@ -86,7 +86,7 @@ select
     ST_SetSRID(ST_MakePoint(sqlc.arg(lng)::float8, sqlc.arg(lat)::float8), 4326)::geography
   ) as distance_meters
 from mechanics m
-where m.is_available = true
+-- is_available no longer required for matching
   and m.current_location is not null
   and ST_DWithin(
     m.current_location,
