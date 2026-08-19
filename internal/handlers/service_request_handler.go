@@ -48,9 +48,8 @@ func (h *ServiceRequestHandler) Create(c *fiber.Ctx) error {
 	if in.VehicleID == uuid.Nil {
 		return apierr.JSON(c, fiber.StatusBadRequest, "vehicle_id is required")
 	}
-	if in.CategoryID == uuid.Nil {
-		return apierr.JSON(c, fiber.StatusBadRequest, "category_id is required")
-	}
+	// category is preferred but not hard-required for demos
+	// if in.CategoryID == uuid.Nil { ... }
 	if in.Latitude == 0 && in.Longitude == 0 {
 		return apierr.JSON(c, fiber.StatusBadRequest, "latitude and longitude are required")
 	}

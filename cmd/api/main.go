@@ -55,7 +55,7 @@ func main() {
 	garageHandler := handlers.NewGarageHandler(garageSvc)
 
 	requestRepo := repository.NewServiceRequestRepository(queries)
-	requestSvc := services.NewServiceRequestService(requestRepo, garageRepo, hub, log)
+	requestSvc := services.NewServiceRequestService(requestRepo, garageRepo, hub, pool, log)
 	requestHandler := handlers.NewServiceRequestHandler(requestSvc)
 
 	offerRepo := repository.NewOfferRepository(pool, queries)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	"github.com/yourorg/digital-garage/internal/models"
 	"github.com/yourorg/digital-garage/internal/repository"
@@ -33,11 +34,12 @@ type ServiceRequestService struct {
 	repo    repository.ServiceRequestRepository
 	garages repository.GarageRepository
 	hub     *ws.Manager
+	pool    *pgxpool.Pool
 	log     zerolog.Logger
 }
 
-func NewServiceRequestService(repo repository.ServiceRequestRepository, garages repository.GarageRepository, hub *ws.Manager, log zerolog.Logger) *ServiceRequestService {
-	return &ServiceRequestService{repo: repo, garages: garages, hub: hub, log: log}
+func NewServiceRequestService(repo repository.ServiceRequestRepository, garages repository.GarageRepository, hub *ws.Manager, pool *pgxpool.Pool, log zerolog.Logger) *ServiceRequestService {
+	return &ServiceRequestService{repo: repo, garages: garages, hub: hub, pool: pool, log: log}
 }
 
 func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, in models.CreateServiceRequestInput) (uuid.UUID, string, error) {
@@ -75,11 +77,14 @@ func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, i
 	// Also fan out to available field mechanics near the request so
 	// independent mechanics (not only garage owners) see the job live.
 	mechanics, mErr := s.repo.ListNearbyMechanics(ctx, in.Latitude, in.Longitude, geo.KMToMeters(matchRadiusKM), 25)
+	notified := map[string]struct{}{}
 	if mErr != nil {
 		s.log.Warn().Err(mErr).Msg("nearby mechanic matching failed, request still created")
 	} else {
 		for _, m := range mechanics {
-			s.hub.SendToUser(m.ProfileID.String(), ws.NewEvent(ws.EventNewRequestMatch, ws.NewRequestMatchPayload{
+			pid := m.ProfileID.String()
+			notified[pid] = struct{}{}
+			s.hub.SendToUser(pid, ws.NewEvent(ws.EventNewRequestMatch, ws.NewRequestMatchPayload{
 				ServiceRequestID: id.String(),
 				CategoryID:       in.CategoryID.String(),
 				Latitude:         in.Latitude,
@@ -87,6 +92,42 @@ func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, i
 				DistanceKM:       m.DistanceMeters / 1000.0,
 				Description:      in.Description,
 			}))
+		}
+	}
+	for _, g := range nearby {
+		notified[g.OwnerID.String()] = struct{}{}
+	}
+
+	// FALLBACK: if geo matching found nobody (cold GPS, empty mechanics table,
+	// or free-tier demo), broadcast to every active mechanic + garage_owner
+	// so the inbox is never silently empty after a real create.
+	if len(notified) == 0 && s.pool != nil {
+		rows, err := s.pool.Query(ctx, `
+			select id::text from profiles
+			where role in ('mechanic', 'garage_owner') and coalesce(is_active, true) = true
+			limit 100
+		`)
+		if err != nil {
+			s.log.Warn().Err(err).Msg("broadcast fallback: list providers failed")
+		} else {
+			defer rows.Close()
+			n := 0
+			for rows.Next() {
+				var pid string
+				if rows.Scan(&pid) != nil || pid == "" {
+					continue
+				}
+				s.hub.SendToUser(pid, ws.NewEvent(ws.EventNewRequestMatch, ws.NewRequestMatchPayload{
+					ServiceRequestID: id.String(),
+					CategoryID:       in.CategoryID.String(),
+					Latitude:         in.Latitude,
+					Longitude:        in.Longitude,
+					DistanceKM:       0,
+					Description:      in.Description,
+				}))
+				n++
+			}
+			s.log.Info().Int("providers", n).Str("request_id", id.String()).Msg("broadcast fallback: notified all active providers")
 		}
 	}
 
