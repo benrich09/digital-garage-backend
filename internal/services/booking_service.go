@@ -163,17 +163,38 @@ func (s *BookingService) autoBill(ctx context.Context, booking models.Booking) {
 	}
 	amount, _ := strconv.ParseFloat(priceStr, 64)
 	if amount <= 0 {
-		// fallback provider_services
+		// fallback provider_services (price registered by mechanic/garage)
 		_ = s.pool.QueryRow(ctx, `
 			select coalesce(ps.price::text, '0')
 			from provider_services ps
 			where ps.provider_id = $1 and ps.is_active = true
-			order by ps.created_at desc limit 1
+			order by ps.is_roadside desc, ps.created_at desc limit 1
 		`, providerID).Scan(&priceStr)
 		amount, _ = strconv.ParseFloat(priceStr, 64)
 	}
+	// Roadside / mechanic: add distance fee (TZS 2,000 per km, min 0)
+	var distM float64
+	_ = s.pool.QueryRow(ctx, `
+		select coalesce(
+			ST_Distance(
+				sr.pickup_location,
+				coalesce(m.current_location, g.location)
+			), 0)
+		from bookings b
+		join service_requests sr on sr.id = b.service_request_id
+		left join mechanics m on m.id = b.mechanic_id
+		left join garages g on g.id = b.garage_id
+		where b.id = $1
+	`, booking.ID).Scan(&distM)
+	if distM > 0 && booking.MechanicID != nil {
+		km := distM / 1000.0
+		travel := km * 2000.0 // TZS per km
+		amount += travel
+		serviceName = serviceName + " (+ travel)"
+		s.log.Info().Float64("km", km).Float64("travel", travel).Msg("autoBill: added mechanic travel fee")
+	}
 	if amount <= 0 {
-		s.log.Warn().Str("booking_id", booking.ID.String()).Msg("autoBill: no positive price — customer will not see a bill until price is configured on provider services")
+		s.log.Warn().Str("booking_id", booking.ID.String()).Msg("autoBill: no positive price — set prices under My services")
 		return
 	}
 

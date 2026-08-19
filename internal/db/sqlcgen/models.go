@@ -230,18 +230,3 @@ type Payment struct {
 	CreatedAt             time.Time
 }
 
-// --- Reviews ------------------------------------------------------------
-
-type CreateReviewRow struct {
-	ID        uuid.UUID
-	CreatedAt time.Time
-}
-
-type ReviewRow struct {
-	ID         uuid.UUID
-	BookingID  uuid.UUID
-	ReviewerID uuid.UUID
-	Rating     int32
-	Comment    *string
-	CreatedAt  time.Time
-}

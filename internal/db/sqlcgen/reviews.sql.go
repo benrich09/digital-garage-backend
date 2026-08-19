@@ -3,6 +3,7 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -20,6 +21,20 @@ type CreateReviewParams struct {
 	MechanicID *uuid.UUID
 	Rating     int32
 	Comment    *string
+}
+
+type CreateReviewRow struct {
+	ID        uuid.UUID
+	CreatedAt time.Time
+}
+
+type ReviewRow struct {
+	ID         uuid.UUID
+	BookingID  uuid.UUID
+	ReviewerID uuid.UUID
+	Rating     int32
+	Comment    *string
+	CreatedAt  time.Time
 }
 
 func (q *Queries) CreateReview(ctx context.Context, arg CreateReviewParams) (CreateReviewRow, error) {

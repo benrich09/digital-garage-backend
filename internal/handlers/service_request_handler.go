@@ -118,7 +118,14 @@ func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 	if err != nil {
 		return apierr.JSON(c, fiber.StatusInternalServerError, "failed to list open requests")
 	}
-	return c.JSON(fiber.Map{"service_requests": requests})
+	// If nothing nearby (common when GPS is wrong or mechanics are far),
+	// still return the latest pending requests so the inbox is usable.
+	if len(requests) == 0 {
+		if recent, rerr := h.svc.BrowseOpen(c.Context(), lat, lng, 500, 50); rerr == nil && len(recent) > 0 {
+			requests = recent
+		}
+	}
+	return c.JSON(fiber.Map{"service_requests": requests, "count": len(requests)})
 }
 
 // @Tags         service-requests

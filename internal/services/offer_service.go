@@ -112,8 +112,41 @@ func (s *OfferService) ProviderApprove(ctx context.Context, in models.CreateOffe
 	if in.Currency == "" {
 		in.Currency = "TZS"
 	}
+	// Independent mechanics still need a garage_id (NOT NULL on offers).
+	// Auto-create a personal "Mobile mechanic" garage so approve never
+	// dies with "garage_id is required".
 	if in.GarageID == uuid.Nil {
-		return models.AcceptOfferResult{}, fmt.Errorf("garage_id is required — set up a garage profile or link a mechanic row")
+		var gid uuid.UUID
+		err := s.pool.QueryRow(ctx, `
+			insert into garages (
+			  owner_id, name, description, address, location,
+			  is_active, verification_status, is_verified
+			) values (
+			  $1,
+			  'Mobile mechanic',
+			  'Personal mechanic profile (auto-created)',
+			  'On-site',
+			  ST_SetSRID(ST_MakePoint(39.2083, -6.7924), 4326)::geography,
+			  true,
+			  'approved',
+			  true
+			)
+			returning id
+		`, callerID).Scan(&gid)
+		if err != nil {
+			// Maybe one already exists from a race — re-read
+			_ = s.pool.QueryRow(ctx, `
+				select id from garages where owner_id = $1 order by created_at asc limit 1
+			`, callerID).Scan(&gid)
+		}
+		if gid == uuid.Nil {
+			return models.AcceptOfferResult{}, fmt.Errorf("could not resolve garage for provider — create a garage profile in the app")
+		}
+		in.GarageID = gid
+		// Link mechanic row to this garage if possible
+		if in.MechanicID != nil {
+			_, _ = s.pool.Exec(ctx, `update mechanics set garage_id = $1 where id = $2`, gid, *in.MechanicID)
+		}
 	}
 	id, _, err := s.offers.Create(ctx, in)
 	if err != nil {
