@@ -85,7 +85,8 @@ const listOpenServiceRequestsNear = `-- name: ListOpenServiceRequestsNear :many
 -- All pending requests, closest first. Radius is soft: we still return
 -- everything pending so demos / wrong GPS still show the inbox.
 select
-  sr.id, sr.description, sr.status, sr.requested_at, sr.category_id,
+  sr.id, sr.description, sr.status, sr.requested_at,
+  coalesce(sr.category_id, '00000000-0000-0000-0000-000000000000'::uuid) as category_id,
   coalesce(ST_Y(sr.pickup_location::geometry), 0) as latitude,
   coalesce(ST_X(sr.pickup_location::geometry), 0) as longitude,
   coalesce(ST_Distance(
@@ -96,7 +97,7 @@ select
   p.full_name as owner_name,
   p.phone as owner_phone,
   p.avatar_url as owner_avatar_url,
-  v.id as vehicle_id,
+  coalesce(v.id, '00000000-0000-0000-0000-000000000000'::uuid) as vehicle_id,
   v.make as vehicle_make,
   v.model as vehicle_model,
   v.year as vehicle_year,

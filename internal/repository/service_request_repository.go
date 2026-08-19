@@ -126,10 +126,11 @@ func (r *serviceRequestRepository) ListOpenNear(ctx context.Context, lat, lng, r
 	}
 	out := make([]models.OpenServiceRequest, 0, len(rows))
 	for _, row := range rows {
-		item := models.OpenServiceRequest{
+		out = append(out, models.OpenServiceRequest{
 			ID:             row.ID,
 			Description:    row.Description,
 			Status:         row.Status,
+			CategoryID:     row.CategoryID,
 			CategoryName:   row.CategoryName,
 			Latitude:       row.Latitude,
 			Longitude:      row.Longitude,
@@ -139,18 +140,12 @@ func (r *serviceRequestRepository) ListOpenNear(ctx context.Context, lat, lng, r
 			OwnerName:      row.OwnerName,
 			OwnerPhone:     row.OwnerPhone,
 			OwnerAvatarURL: row.OwnerAvatarURL,
+			VehicleID:      row.VehicleID,
 			VehicleMake:    row.VehicleMake,
 			VehicleModel:   row.VehicleModel,
 			VehicleYear:    row.VehicleYear,
 			VehiclePlate:   row.VehiclePlate,
-		}
-		if row.CategoryID != nil {
-			item.CategoryID = *row.CategoryID
-		}
-		if row.VehicleID != nil {
-			item.VehicleID = *row.VehicleID
-		}
-		out = append(out, item)
+		})
 	}
 	return out, nil
 }
