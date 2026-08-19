@@ -111,7 +111,7 @@ func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 	}
 	radiusKM, _ := strconv.ParseFloat(c.Query("radius_km"), 64)
 	if radiusKM <= 0 {
-		radiusKM = 100 // wide default so free-tier demos still match
+		radiusKM = 500 // nationwide-ish so wrong GPS still fills inbox
 	}
 
 	requests, err := h.svc.BrowseOpen(c.Context(), lat, lng, radiusKM, 50)

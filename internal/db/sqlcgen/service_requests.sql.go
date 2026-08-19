@@ -82,14 +82,16 @@ func (q *Queries) ListServiceRequestsByOwner(ctx context.Context, arg ListServic
 }
 
 const listOpenServiceRequestsNear = `-- name: ListOpenServiceRequestsNear :many
+-- All pending requests, closest first. Radius is soft: we still return
+-- everything pending so demos / wrong GPS still show the inbox.
 select
   sr.id, sr.description, sr.status, sr.requested_at, sr.category_id,
-  ST_Y(sr.pickup_location::geometry) as latitude,
-  ST_X(sr.pickup_location::geometry) as longitude,
-  ST_Distance(
+  coalesce(ST_Y(sr.pickup_location::geometry), 0) as latitude,
+  coalesce(ST_X(sr.pickup_location::geometry), 0) as longitude,
+  coalesce(ST_Distance(
     sr.pickup_location,
     ST_SetSRID(ST_MakePoint($1::float8, $2::float8), 4326)::geography
-  ) as distance_meters,
+  ), 0) as distance_meters,
   p.id as owner_id,
   p.full_name as owner_name,
   p.phone as owner_phone,
@@ -102,15 +104,10 @@ select
   sc.name as category_name
 from service_requests sr
 join profiles p on p.id = sr.car_owner_id
-join vehicles v on v.id = sr.vehicle_id
+left join vehicles v on v.id = sr.vehicle_id
 left join service_categories sc on sc.id = sr.category_id
 where sr.status = 'pending'
-  and ST_DWithin(
-    sr.pickup_location,
-    ST_SetSRID(ST_MakePoint($1::float8, $2::float8), 4326)::geography,
-    $3::float8
-  )
-order by distance_meters asc
+order by distance_meters asc nulls last, sr.requested_at desc
 limit $4::int
 `
 
