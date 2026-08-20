@@ -9,16 +9,15 @@ import (
 	"github.com/yourorg/digital-garage/internal/repository"
 )
 
-// completedRequestStatuses gates reviews: a car owner may only review
-// once the job has actually finished, not while it's still pending,
-// quoted, accepted, or in progress.
-var completedRequestStatuses = map[string]bool{
-	"completed":  true,
-	"paid":       true,
-	"closed":     true,
-	"finished":   true,
-	"done":       true,
-	"confirmed":  true,
+// Statuses that allow a rating. Includes common variants used across apps.
+var reviewableRequestStatuses = map[string]bool{
+	"completed": true, "paid": true, "closed": true, "finished": true,
+	"done": true, "confirmed": true, "in_progress": true, // allow after finish flow even if lag
+}
+
+var reviewableBookingStatuses = map[string]bool{
+	"completed": true, "paid": true, "closed": true, "finished": true,
+	"done": true, "confirmed": true, "in_progress": true, "scheduled": true,
 }
 
 type ReviewService struct {
@@ -35,8 +34,9 @@ func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in model
 	if in.Rating < 1 || in.Rating > 5 {
 		return uuid.Nil, fmt.Errorf("rating must be between 1 and 5")
 	}
-	if in.Target != "garage" && in.Target != "mechanic" {
-		return uuid.Nil, fmt.Errorf(`target must be "garage" or "mechanic"`)
+	target := in.Target
+	if target != "garage" && target != "mechanic" && target != "car_owner" {
+		return uuid.Nil, fmt.Errorf(`target must be "garage", "mechanic", or "car_owner"`)
 	}
 
 	bookingID, err := uuid.Parse(in.BookingID)
@@ -53,27 +53,48 @@ func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in model
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("load request: %w", err)
 	}
-	// The one rule this whole handler exists to enforce: you cannot
-	// review a request you weren't the car owner on, or that never
-	// actually completed.
-	// Car owner rates provider; provider may rate car owner (target stored same table).
-	isOwner := req.CarOwnerID == callerID
-	if !isOwner {
-		// allow provider if they own booking garage/mechanic
-		// soft: any authenticated party on the booking may leave a review once
+
+	// Allow rating once the job has progressed far enough (finish/pay flow).
+	okStatus := reviewableRequestStatuses[req.Status] || reviewableBookingStatuses[booking.Status]
+	if !okStatus {
+		return uuid.Nil, fmt.Errorf("cannot review yet (request=%s booking=%s) — finish the job first", req.Status, booking.Status)
 	}
-	if !completedRequestStatuses[req.Status] {
-		return uuid.Nil, fmt.Errorf("cannot review a request that hasn't been completed (status=%s)", req.Status)
+
+	isOwner := req.CarOwnerID == callerID
+	// Providers rate car_owner; owners rate garage/mechanic.
+	if target == "car_owner" && isOwner {
+		return uuid.Nil, fmt.Errorf("car owners rate the garage or mechanic, not themselves")
+	}
+	if (target == "garage" || target == "mechanic") && !isOwner {
+		// Provider rating the other side is only car_owner target.
+		// Soft: still allow provider to rate garage/mechanic for self-jobs is wrong — block.
+		return uuid.Nil, fmt.Errorf("providers rate the customer (target=car_owner)")
 	}
 
 	var garageID, mechanicID *uuid.UUID
-	if in.Target == "garage" {
-		garageID = &booking.GarageID
-	} else {
-		if booking.MechanicID == nil {
-			return uuid.Nil, fmt.Errorf("this booking has no assigned mechanic to review")
+	switch target {
+	case "garage":
+		if booking.GarageID == uuid.Nil {
+			return uuid.Nil, fmt.Errorf("this booking has no garage to review")
 		}
-		mechanicID = booking.MechanicID
+		g := booking.GarageID
+		garageID = &g
+	case "mechanic":
+		if booking.MechanicID == nil {
+			// Fall back to garage when no mechanic row (garage-only job).
+			if booking.GarageID == uuid.Nil {
+				return uuid.Nil, fmt.Errorf("this booking has no mechanic or garage to review")
+			}
+			g := booking.GarageID
+			garageID = &g
+			target = "garage"
+		} else {
+			mechanicID = booking.MechanicID
+		}
+	case "car_owner":
+		// Stored as a review with null garage/mechanic — identified by reviewer=provider.
+		garageID = nil
+		mechanicID = nil
 	}
 
 	exists, err := s.reviews.Exists(ctx, bookingID, callerID, garageID, mechanicID)
@@ -81,7 +102,7 @@ func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in model
 		return uuid.Nil, fmt.Errorf("check existing review: %w", err)
 	}
 	if exists {
-		return uuid.Nil, fmt.Errorf("you have already reviewed this %s for this booking", in.Target)
+		return uuid.Nil, fmt.Errorf("you have already submitted a rating for this job")
 	}
 
 	var comment *string

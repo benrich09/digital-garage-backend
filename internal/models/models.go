@@ -150,7 +150,8 @@ type Review struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// CreateReviewInput is what the car owner's app POSTs after a job
+// CreateReviewInput is POSTed after a job.
+// target: "garage" | "mechanic" (car owner) or "car_owner" (provider rates customer).
 // completes. Target is "garage" or "mechanic" — reviews.go's CHECK
 // constraint requires exactly one of garage_id/mechanic_id to be set,
 // so the service maps Target to the right column rather than trusting
