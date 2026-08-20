@@ -47,9 +47,12 @@ func (q *Queries) CreateReview(ctx context.Context, arg CreateReviewParams) (Cre
 const reviewExists = `-- name: ReviewExists :one
 select exists(
   select 1 from reviews
-  where booking_id = $1 and reviewer_id = $2
-    and coalesce(garage_id, '00000000-0000-0000-0000-000000000000') = coalesce($3, '00000000-0000-0000-0000-000000000000')
-    and coalesce(mechanic_id, '00000000-0000-0000-0000-000000000000') = coalesce($4, '00000000-0000-0000-0000-000000000000')
+  where booking_id = $1::uuid
+    and reviewer_id = $2::uuid
+    and coalesce(garage_id, '00000000-0000-0000-0000-000000000000'::uuid)
+        = coalesce($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+    and coalesce(mechanic_id, '00000000-0000-0000-0000-000000000000'::uuid)
+        = coalesce($4::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
 ) as exists
 `
 
