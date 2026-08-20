@@ -175,21 +175,18 @@ func (r *serviceRequestRepository) ListNearbyMechanics(ctx context.Context, lat,
 }
 
 func inferRequestKind(stored string, desc *string) string {
-	if stored != "" {
+	if stored == "garage_booking" || stored == "mechanic_request" {
 		return stored
 	}
-	if desc == nil {
-		return "mechanic_request"
+	if desc != nil {
+		d := *desc
+		if strings.Contains(d, "[kind:garage_booking]") {
+			return "garage_booking"
+		}
+		if strings.Contains(d, "[kind:mechanic_request]") {
+			return "mechanic_request"
+		}
 	}
-	d := *desc
-	if strings.Contains(d, "[kind:garage_booking]") {
-		return "garage_booking"
-	}
-	if strings.Contains(d, "[kind:mechanic_request]") {
-		return "mechanic_request"
-	}
-	if strings.Contains(strings.ToLower(d), "garage") {
-		return "garage_booking"
-	}
+	// Default: treat as mechanic roadside request (most common).
 	return "mechanic_request"
 }

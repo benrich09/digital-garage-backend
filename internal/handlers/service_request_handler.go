@@ -142,16 +142,22 @@ func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 			requests = recent
 		}
 	}
-	// Mechanics only see mechanic_request; garage owners only garage_booking.
+	// Mechanics see mechanic_request (default); garages see garage_booking only.
 	if user, ok := middleware.CurrentUser(c); ok {
 		role := user.Role
+		switch role {
+		case "Garage Owner", "garage-owner", "GarageOwner":
+			role = "garage_owner"
+		case "Mechanic", "MECHANIC":
+			role = "mechanic"
+		}
 		filtered := make([]models.OpenServiceRequest, 0, len(requests))
 		for _, it := range requests {
 			kind := it.RequestKind
 			if kind == "" {
 				kind = "mechanic_request"
 			}
-			if role == "mechanic" && kind != "mechanic_request" {
+			if role == "mechanic" && kind == "garage_booking" {
 				continue
 			}
 			if role == "garage_owner" && kind != "garage_booking" {

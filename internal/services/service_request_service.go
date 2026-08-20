@@ -123,15 +123,22 @@ func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, i
 		notified[g.OwnerID.String()] = struct{}{}
 	}
 
-	// FALLBACK: if geo matching found nobody (cold GPS, empty mechanics table,
-	// or free-tier demo), broadcast to every active mechanic + garage_owner
-	// so the inbox is never silently empty after a real create.
-	if len(notified) == 0 && s.pool != nil {
+	// Always broadcast to all active providers of the matching role so inbox
+	// updates even when geo tables are empty or GPS is wrong.
+	if s.pool != nil {
+		kind := in.RequestKind
+		if kind == "" {
+			kind = "mechanic_request"
+		}
+		roleFilter := "mechanic"
+		if kind == "garage_booking" {
+			roleFilter = "garage_owner"
+		}
 		rows, err := s.pool.Query(ctx, `
 			select id::text from profiles
-			where role in ('mechanic', 'garage_owner') and coalesce(is_active, true) = true
+			where role = $1 and coalesce(is_active, true) = true
 			limit 100
-		`)
+		`, roleFilter)
 		if err != nil {
 			s.log.Warn().Err(err).Msg("broadcast fallback: list providers failed")
 		} else {
