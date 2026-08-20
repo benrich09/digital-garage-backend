@@ -96,6 +96,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	// checked softly in the handler so a mis-tagged profile can still see work
 	// during demos; car owners get an empty list rather than a 403.
 	auth.Get("/provider/open-requests", d.ServiceRequest.ListOpen)
+	auth.Post("/transactions", d.Commission.RecordService)
 
 	// car_owner routes
 	carOwner := auth.Group("", middleware.RequireRole(models.RoleCarOwner))
@@ -121,7 +122,6 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	// owners record jobs and owe commission, so these hang off a group
 	// that admits both rather than off garageOwner.
 	provider := auth.Group("", middleware.RequireRole(models.RoleGarageOwner, models.RoleMechanic))
-	provider.Post("/transactions", d.Commission.RecordService)
 	provider.Get("/providers/me/balance", d.Commission.MyBalance)
 	provider.Post("/settlements/:id/submit", d.Commission.SubmitSettlement)
 

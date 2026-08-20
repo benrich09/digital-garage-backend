@@ -190,9 +190,10 @@ func (s *BookingService) autoBill(ctx context.Context, booking models.Booking) {
 		km := distM / 1000.0
 		travel := km * 2000.0 // TZS per km
 		amount += travel
-		serviceName = serviceName + " (+ travel)"
+		serviceName = fmt.Sprintf("%s | service base + travel %.1f km (TZS %.0f)", serviceName, km, travel)
 		s.log.Info().Float64("km", km).Float64("travel", travel).Msg("autoBill: added mechanic travel fee")
 	}
+
 	if amount <= 0 {
 		s.log.Warn().Str("booking_id", booking.ID.String()).Msg("autoBill: no positive price — set prices under My services")
 		return
