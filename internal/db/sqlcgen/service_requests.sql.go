@@ -12,7 +12,13 @@ var ErrNoRows = errors.New("no rows")
 
 const createServiceRequest = `-- name: CreateServiceRequest :one
 insert into service_requests (car_owner_id, vehicle_id, category_id, description, pickup_location, photo_urls)
-values ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5::float8, $6::float8), 4326)::geography, $7::jsonb)
+values (
+  $1, $2,
+  nullif($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid),
+  $4,
+  ST_SetSRID(ST_MakePoint($5::float8, $6::float8), 4326)::geography,
+  coalesce($7::jsonb, '[]'::jsonb)
+)
 returning id, status, created_at
 `
 

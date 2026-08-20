@@ -43,6 +43,31 @@ func NewServiceRequestService(repo repository.ServiceRequestRepository, garages 
 }
 
 func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, in models.CreateServiceRequestInput) (uuid.UUID, string, error) {
+	// Resolve category when the client sent empty / "not listed".
+	if in.CategoryID == uuid.Nil && s.pool != nil {
+		var catID uuid.UUID
+		err := s.pool.QueryRow(ctx, `
+			select id from service_categories
+			where coalesce(is_active, true) = true
+			order by name asc
+			limit 1
+		`).Scan(&catID)
+		if err != nil || catID == uuid.Nil {
+			return uuid.Nil, "", fmt.Errorf("no service categories configured — add at least one row to service_categories")
+		}
+		in.CategoryID = catID
+	}
+	// Ensure vehicle exists (FK) — common cause of "failed to create".
+	if s.pool != nil && in.VehicleID != uuid.Nil {
+		var exists bool
+		_ = s.pool.QueryRow(ctx, `select exists(select 1 from vehicles where id = $1)`, in.VehicleID).Scan(&exists)
+		if !exists {
+			return uuid.Nil, "", fmt.Errorf("vehicle not found — add a vehicle in My Vehicles first")
+		}
+	}
+	if in.RequestKind == "" {
+		in.RequestKind = "mechanic_request"
+	}
 	id, status, err := s.repo.Create(ctx, ownerID, in)
 	if err != nil {
 		return uuid.Nil, "", fmt.Errorf("create service request: %w", err)

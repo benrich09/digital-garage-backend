@@ -56,7 +56,8 @@ func (h *ServiceRequestHandler) Create(c *fiber.Ctx) error {
 
 	id, status, err := h.svc.Create(c.Context(), ownerID, in)
 	if err != nil {
-		return apierr.JSON(c, fiber.StatusInternalServerError, "failed to create service request")
+		// Surface the real cause so the app can show it (FK, role, missing category, etc.)
+		return apierr.JSON(c, fiber.StatusBadRequest, err.Error())
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": id, "status": status})
