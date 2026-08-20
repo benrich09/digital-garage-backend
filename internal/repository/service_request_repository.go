@@ -51,6 +51,7 @@ func (r *serviceRequestRepository) Create(ctx context.Context, ownerID uuid.UUID
 		Lat:         in.Latitude,
 		Lng:         in.Longitude,
 		PhotoURLs:   photoJSON,
+		RequestKind: func() string { if in.RequestKind != "" { return in.RequestKind }; return "mechanic_request" }(),
 	})
 	if err != nil {
 		return uuid.Nil, "", err
@@ -130,6 +131,7 @@ func (r *serviceRequestRepository) ListOpenNear(ctx context.Context, lat, lng, r
 			ID:             row.ID,
 			Description:    row.Description,
 			Status:         row.Status,
+			RequestKind:    row.RequestKind,
 			CategoryID:     row.CategoryID,
 			CategoryName:   row.CategoryName,
 			Latitude:       row.Latitude,

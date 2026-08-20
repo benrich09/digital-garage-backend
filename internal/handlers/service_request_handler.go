@@ -141,6 +141,25 @@ func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 			requests = recent
 		}
 	}
+	// Mechanics only see mechanic_request; garage owners only garage_booking.
+	if user, ok := middleware.CurrentUser(c); ok {
+		role := user.Role
+		filtered := make([]models.OpenServiceRequest, 0, len(requests))
+		for _, it := range requests {
+			kind := it.RequestKind
+			if kind == "" {
+				kind = "mechanic_request"
+			}
+			if role == "mechanic" && kind != "mechanic_request" {
+				continue
+			}
+			if role == "garage_owner" && kind != "garage_booking" {
+				continue
+			}
+			filtered = append(filtered, it)
+		}
+		requests = filtered
+	}
 	return c.JSON(fiber.Map{"service_requests": requests, "count": len(requests)})
 }
 

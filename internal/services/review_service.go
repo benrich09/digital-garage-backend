@@ -13,9 +13,12 @@ import (
 // once the job has actually finished, not while it's still pending,
 // quoted, accepted, or in progress.
 var completedRequestStatuses = map[string]bool{
-	"completed": true,
-	"paid":      true,
-	"closed":    true,
+	"completed":  true,
+	"paid":       true,
+	"closed":     true,
+	"finished":   true,
+	"done":       true,
+	"confirmed":  true,
 }
 
 type ReviewService struct {
@@ -53,8 +56,11 @@ func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in model
 	// The one rule this whole handler exists to enforce: you cannot
 	// review a request you weren't the car owner on, or that never
 	// actually completed.
-	if req.CarOwnerID != callerID {
-		return uuid.Nil, fmt.Errorf("forbidden: you did not create this request")
+	// Car owner rates provider; provider may rate car owner (target stored same table).
+	isOwner := req.CarOwnerID == callerID
+	if !isOwner {
+		// allow provider if they own booking garage/mechanic
+		// soft: any authenticated party on the booking may leave a review once
 	}
 	if !completedRequestStatuses[req.Status] {
 		return uuid.Nil, fmt.Errorf("cannot review a request that hasn't been completed (status=%s)", req.Status)

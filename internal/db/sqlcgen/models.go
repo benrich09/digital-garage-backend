@@ -99,6 +99,7 @@ type ListOpenServiceRequestsNearRow struct {
 	Description    *string
 	Status         string
 	RequestedAt    time.Time
+	RequestKind    string
 	CategoryID     uuid.UUID
 	Latitude       float64
 	Longitude      float64

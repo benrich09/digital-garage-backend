@@ -109,7 +109,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	// the single event that books the platform's 5% commission.
 	carOwner.Post("/transactions/:id/confirm", d.Commission.Confirm)
 	carOwner.Post("/transactions/:id/dispute", d.Commission.Dispute)
-	carOwner.Post("/reviews", d.Review.Create)
+	auth.Post("/reviews", d.Review.Create)
 
 	// shared read across roles (car owner viewing their own request,
 	// garage/mechanic viewing a matched one — enforced further by RLS)

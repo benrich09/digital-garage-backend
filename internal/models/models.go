@@ -52,6 +52,7 @@ type OpenServiceRequest struct {
 	ID             uuid.UUID `json:"id"`
 	Description    *string   `json:"description,omitempty"`
 	Status         string    `json:"status"`
+	RequestKind    string    `json:"request_kind"`
 	CategoryID     uuid.UUID `json:"category_id"`
 	CategoryName   *string   `json:"category_name,omitempty"`
 	Latitude       float64   `json:"latitude"`
