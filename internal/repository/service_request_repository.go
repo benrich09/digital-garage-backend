@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/yourorg/digital-garage/internal/db/sqlcgen"
@@ -43,6 +44,17 @@ func (r *serviceRequestRepository) Create(ctx context.Context, ownerID uuid.UUID
 		return uuid.Nil, "", err
 	}
 
+	kind := in.RequestKind
+	if kind == "" {
+		kind = "mechanic_request"
+	}
+	// Tag description so ListOpen can route mechanic vs garage without a
+	// DB migration. If request_kind column exists, apps may still use it.
+	if desc == "" {
+		desc = "[kind:" + kind + "]"
+	} else if !strings.Contains(desc, "[kind:") {
+		desc = "[kind:" + kind + "]\n" + desc
+	}
 	row, err := r.q.CreateServiceRequest(ctx, sqlcgen.CreateServiceRequestParams{
 		CarOwnerID:  ownerID,
 		VehicleID:   in.VehicleID,
@@ -51,7 +63,7 @@ func (r *serviceRequestRepository) Create(ctx context.Context, ownerID uuid.UUID
 		Lat:         in.Latitude,
 		Lng:         in.Longitude,
 		PhotoURLs:   photoJSON,
-		RequestKind: func() string { if in.RequestKind != "" { return in.RequestKind }; return "mechanic_request" }(),
+		RequestKind: kind,
 	})
 	if err != nil {
 		return uuid.Nil, "", err
@@ -131,7 +143,7 @@ func (r *serviceRequestRepository) ListOpenNear(ctx context.Context, lat, lng, r
 			ID:             row.ID,
 			Description:    row.Description,
 			Status:         row.Status,
-			RequestKind:    row.RequestKind,
+			RequestKind: inferRequestKind(row.RequestKind, row.Description),
 			CategoryID:     row.CategoryID,
 			CategoryName:   row.CategoryName,
 			Latitude:       row.Latitude,
@@ -160,4 +172,24 @@ func (r *serviceRequestRepository) ListNearbyMechanics(ctx context.Context, lat,
 	return r.q.ListNearbyAvailableMechanics(ctx, sqlcgen.ListNearbyAvailableMechanicsParams{
 		Lat: lat, Lng: lng, RadiusMeters: radiusMeters, MaxResults: limit,
 	})
+}
+
+func inferRequestKind(stored string, desc *string) string {
+	if stored != "" {
+		return stored
+	}
+	if desc == nil {
+		return "mechanic_request"
+	}
+	d := *desc
+	if strings.Contains(d, "[kind:garage_booking]") {
+		return "garage_booking"
+	}
+	if strings.Contains(d, "[kind:mechanic_request]") {
+		return "mechanic_request"
+	}
+	if strings.Contains(strings.ToLower(d), "garage") {
+		return "garage_booking"
+	}
+	return "mechanic_request"
 }

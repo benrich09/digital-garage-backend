@@ -11,8 +11,8 @@ import (
 var ErrNoRows = errors.New("no rows")
 
 const createServiceRequest = `-- name: CreateServiceRequest :one
-insert into service_requests (car_owner_id, vehicle_id, category_id, description, pickup_location, photo_urls, request_kind)
-values ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5::float8, $6::float8), 4326)::geography, $7::jsonb, coalesce(nullif($8::text, ''), 'mechanic_request'))
+insert into service_requests (car_owner_id, vehicle_id, category_id, description, pickup_location, photo_urls)
+values ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5::float8, $6::float8), 4326)::geography, $7::jsonb)
 returning id, status, created_at
 `
 
@@ -24,11 +24,11 @@ type CreateServiceRequestParams struct {
 	Lng         float64
 	Lat         float64
 	PhotoURLs   []byte // marshaled JSON array, e.g. []byte(`["https://..."]`)
-	RequestKind string
+	RequestKind string // applied in a best-effort UPDATE after insert
 }
 
 func (q *Queries) CreateServiceRequest(ctx context.Context, arg CreateServiceRequestParams) (CreateServiceRequestRow, error) {
-	row := q.db.QueryRow(ctx, createServiceRequest, arg.CarOwnerID, arg.VehicleID, arg.CategoryID, arg.Description, arg.Lng, arg.Lat, arg.PhotoURLs, arg.RequestKind)
+	row := q.db.QueryRow(ctx, createServiceRequest, arg.CarOwnerID, arg.VehicleID, arg.CategoryID, arg.Description, arg.Lng, arg.Lat, arg.PhotoURLs)
 	var i CreateServiceRequestRow
 	err := row.Scan(&i.ID, &i.Status, &i.CreatedAt)
 	return i, err
@@ -87,7 +87,6 @@ const listOpenServiceRequestsNear = `-- name: ListOpenServiceRequestsNear :many
 -- everything pending so demos / wrong GPS still show the inbox.
 select
   sr.id, sr.description, sr.status, sr.requested_at,
-  coalesce(sr.request_kind, 'mechanic_request') as request_kind,
   coalesce(sr.category_id, '00000000-0000-0000-0000-000000000000'::uuid) as category_id,
   coalesce(ST_Y(sr.pickup_location::geometry), 0) as latitude,
   coalesce(ST_X(sr.pickup_location::geometry), 0) as longitude,
@@ -132,12 +131,13 @@ func (q *Queries) ListOpenServiceRequestsNear(ctx context.Context, arg ListOpenS
 	for rows.Next() {
 		var i ListOpenServiceRequestsNearRow
 		if err := rows.Scan(
-			&i.ID, &i.Description, &i.Status, &i.RequestedAt, &i.RequestKind, &i.CategoryID,
+			&i.ID, &i.Description, &i.Status, &i.RequestedAt, &i.CategoryID,
 			&i.Latitude, &i.Longitude, &i.DistanceMeters,
 			&i.OwnerID, &i.OwnerName, &i.OwnerPhone, &i.OwnerAvatarURL,
 			&i.VehicleID, &i.VehicleMake, &i.VehicleModel, &i.VehicleYear, &i.VehiclePlate,
 			&i.CategoryName,
 		); err != nil {
+			// RequestKind filled in repository from description / default
 			return nil, err
 		}
 		items = append(items, i)
