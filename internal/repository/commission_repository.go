@@ -215,7 +215,7 @@ type SettlementRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (models.Settlement, error)
 	ListForProvider(ctx context.Context, providerID uuid.UUID) ([]models.Settlement, error)
 	ListByStatus(ctx context.Context, status string, limit int32) ([]models.Settlement, error)
-	MarkSubmitted(ctx context.Context, id uuid.UUID, reference, method string, at time.Time) error
+	MarkSubmitted(ctx context.Context, id uuid.UUID, reference, method, receiptURL string, at time.Time) error
 	MarkVerified(ctx context.Context, id, adminID uuid.UUID, at time.Time) error
 	GenerateForMonth(ctx context.Context, month time.Time, dueDate time.Time) (int64, error)
 }
@@ -287,11 +287,15 @@ func collectSettlements(rows pgx.Rows) ([]models.Settlement, error) {
 // MarkSubmitted records the provider's payment reference. Note it does
 // NOT touch amount_due — the provider must not be able to decide what
 // they owe.
-func (r *settlementRepository) MarkSubmitted(ctx context.Context, id uuid.UUID, reference, method string, at time.Time) error {
+func (r *settlementRepository) MarkSubmitted(ctx context.Context, id uuid.UUID, reference, method, receiptURL string, at time.Time) error {
 	tag, err := r.pool.Exec(ctx, `
 		update provider_settlements
-		set status = 'submitted', paid_reference = $2, paid_method = nullif($3,''), submitted_at = $4
-		where id = $1 and status <> 'verified'`, id, reference, method, at)
+		set status = 'submitted',
+		    paid_reference = $2,
+		    paid_method = nullif($3,''),
+		    receipt_url = nullif($4,''),
+		    submitted_at = $5
+		where id = $1 and status <> 'verified'`, id, reference, method, receiptURL, at)
 	if err != nil {
 		return err
 	}

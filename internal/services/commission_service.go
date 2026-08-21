@@ -279,7 +279,7 @@ func NextSettlementDue(month time.Time) time.Time {
 // payment did not pass through our systems and we have no other way to
 // know it arrived.
 func (s *CommissionService) SubmitSettlement(
-	ctx context.Context, providerID uuid.UUID, settlementID uuid.UUID, reference, method string,
+	ctx context.Context, providerID uuid.UUID, settlementID uuid.UUID, reference, method, receiptURL string,
 ) error {
 	st, err := s.settlements.GetByID(ctx, settlementID)
 	if err != nil {
@@ -295,7 +295,7 @@ func (s *CommissionService) SubmitSettlement(
 		return errors.New("payment reference is required")
 	}
 
-	if err := s.settlements.MarkSubmitted(ctx, settlementID, reference, method, time.Now().UTC()); err != nil {
+	if err := s.settlements.MarkSubmitted(ctx, settlementID, reference, method, receiptURL, time.Now().UTC()); err != nil {
 		return fmt.Errorf("submit settlement: %w", err)
 	}
 

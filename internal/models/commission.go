@@ -91,6 +91,7 @@ type Settlement struct {
 
 // SubmitSettlementInput is the provider reporting they paid us.
 type SubmitSettlementInput struct {
-	Reference string `json:"reference"`
-	Method    string `json:"method,omitempty"`
+	Reference  string `json:"reference"`
+	Method     string `json:"method,omitempty"`
+	ReceiptURL string `json:"receipt_url,omitempty"`
 }

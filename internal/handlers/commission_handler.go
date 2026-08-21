@@ -179,7 +179,7 @@ func (h *CommissionHandler) SubmitSettlement(c *fiber.Ctx) error {
 		return apierr.JSON(c, fiber.StatusBadRequest, err.Error())
 	}
 
-	if err := h.svc.SubmitSettlement(c.Context(), user.ID, id, in.Reference, in.Method); err != nil {
+	if err := h.svc.SubmitSettlement(c.Context(), user.ID, id, in.Reference, in.Method, in.ReceiptURL); err != nil {
 		return apierr.JSON(c, fiber.StatusBadRequest, err.Error())
 	}
 	return c.SendStatus(fiber.StatusNoContent)
