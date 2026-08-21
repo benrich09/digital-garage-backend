@@ -114,5 +114,8 @@ func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in model
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("create review: %w", err)
 	}
+	// Close the job so it leaves Active lists for both apps.
+	_ = s.requests.UpdateStatus(ctx, booking.ServiceRequestID, "closed")
+	_ = s.bookings.SetStatus(ctx, bookingID, "closed")
 	return id, nil
 }
