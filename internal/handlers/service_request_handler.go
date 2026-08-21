@@ -143,7 +143,7 @@ func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 			requests = recent
 		}
 	}
-	// Mechanics see mechanic_request (default); garages see garage_booking only.
+	// STRICT split: mechanics only mechanic_request; garage owners only garage_booking.
 	if user, ok := middleware.CurrentUser(c); ok {
 		role := user.Role
 		switch role {
@@ -156,13 +156,20 @@ func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 		for _, it := range requests {
 			kind := it.RequestKind
 			if kind == "" {
+				// Untagged rows are treated as on-road mechanic work.
 				kind = "mechanic_request"
 			}
-			if role == "mechanic" && kind == "garage_booking" {
-				continue
-			}
-			if role == "garage_owner" && kind != "garage_booking" {
-				continue
+			switch role {
+			case "mechanic":
+				if kind != "mechanic_request" {
+					continue
+				}
+			case "garage_owner":
+				if kind != "garage_booking" {
+					continue
+				}
+			default:
+				// admin/superadmin: no filter
 			}
 			filtered = append(filtered, it)
 		}
