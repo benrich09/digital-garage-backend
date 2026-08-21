@@ -18,7 +18,7 @@ func NewReviewHandler(svc *services.ReviewService) *ReviewHandler {
 
 // Create godoc
 // @Summary      Rate a garage or mechanic after job completion
-// @Description  car_owner-only. Rejects reviews on requests the caller didn't create or that haven't completed yet, and rejects duplicate reviews for the same booking/target.
+// @Description  Mutual rating: car owners rate garage/mechanic; providers rate the car owner. One rating per side per booking.
 // @Tags         reviews
 // @Security     BearerAuth
 // @Accept       json

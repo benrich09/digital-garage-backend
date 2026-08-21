@@ -5,31 +5,44 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yourorg/digital-garage/internal/models"
 	"github.com/yourorg/digital-garage/internal/repository"
 )
 
-// Statuses that allow a rating. Includes common variants used across apps.
+// Statuses that allow a rating after the job has been worked.
 var reviewableRequestStatuses = map[string]bool{
 	"completed": true, "paid": true, "closed": true, "finished": true,
-	"done": true, "confirmed": true, "in_progress": true, // allow after finish flow even if lag
+	"done": true, "confirmed": true, "in_progress": true, "scheduled": true,
+	"awaiting_payment": true, "payment_confirmed": true,
 }
 
 var reviewableBookingStatuses = map[string]bool{
 	"completed": true, "paid": true, "closed": true, "finished": true,
 	"done": true, "confirmed": true, "in_progress": true, "scheduled": true,
+	"awaiting_payment": true, "payment_confirmed": true,
 }
 
 type ReviewService struct {
 	reviews  repository.ReviewRepository
 	bookings repository.BookingRepository
 	requests repository.ServiceRequestRepository
+	pool     *pgxpool.Pool
 }
 
 func NewReviewService(reviews repository.ReviewRepository, bookings repository.BookingRepository, requests repository.ServiceRequestRepository) *ReviewService {
 	return &ReviewService{reviews: reviews, bookings: bookings, requests: requests}
 }
 
+func (s *ReviewService) WithPool(pool *pgxpool.Pool) *ReviewService {
+	s.pool = pool
+	return s
+}
+
+// Create allows mutual ratings:
+//   - car_owner → garage or mechanic
+//   - garage_owner / mechanic → car_owner
+// Both sides may rate the same booking once each.
 func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in models.CreateReviewInput) (uuid.UUID, error) {
 	if in.Rating < 1 || in.Rating > 5 {
 		return uuid.Nil, fmt.Errorf("rating must be between 1 and 5")
@@ -54,21 +67,53 @@ func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in model
 		return uuid.Nil, fmt.Errorf("load request: %w", err)
 	}
 
-	// Allow rating once the job has progressed far enough (finish/pay flow).
 	okStatus := reviewableRequestStatuses[req.Status] || reviewableBookingStatuses[booking.Status]
 	if !okStatus {
-		return uuid.Nil, fmt.Errorf("cannot review yet (request=%s booking=%s) — finish the job first", req.Status, booking.Status)
+		// Soft allow if booking exists and is past pending/quoted — mutual rating should not block.
+		if req.Status == "pending" || req.Status == "quoted" || req.Status == "cancelled" {
+			return uuid.Nil, fmt.Errorf("cannot review yet — finish the job first")
+		}
 	}
 
-	isOwner := req.CarOwnerID == callerID
-	// Providers rate car_owner; owners rate garage/mechanic.
-	if target == "car_owner" && isOwner {
-		return uuid.Nil, fmt.Errorf("car owners rate the garage or mechanic, not themselves")
+	isCarOwner := req.CarOwnerID == callerID
+	isMechanic := booking.MechanicID != nil && *booking.MechanicID == callerID
+	isGarageOwner := false
+	if s.pool != nil && booking.GarageID != uuid.Nil {
+		var ownerID uuid.UUID
+		_ = s.pool.QueryRow(ctx, `select owner_id from garages where id = $1`, booking.GarageID).Scan(&ownerID)
+		isGarageOwner = ownerID == callerID
 	}
-	if (target == "garage" || target == "mechanic") && !isOwner {
-		// Provider rating the other side is only car_owner target.
-		// Soft: still allow provider to rate garage/mechanic for self-jobs is wrong — block.
-		return uuid.Nil, fmt.Errorf("providers rate the customer (target=car_owner)")
+	// Fallback: provider apps often store provider user id as mechanic_id or only garage
+	if !isCarOwner && !isMechanic && !isGarageOwner && s.pool != nil {
+		// Any user linked as provider on service_transactions for this booking
+		var n int
+		_ = s.pool.QueryRow(ctx, `
+			select count(*) from service_transactions
+			where booking_id = $1 and provider_id = $2
+		`, bookingID, callerID).Scan(&n)
+		if n > 0 {
+			isGarageOwner = true // treat as provider party
+		}
+	}
+
+	isProvider := isMechanic || isGarageOwner
+	if !isCarOwner && !isProvider {
+		return uuid.Nil, fmt.Errorf("only the customer or the assigned provider can rate this job")
+	}
+
+	// Mutual rules
+	switch target {
+	case "car_owner":
+		if isCarOwner {
+			return uuid.Nil, fmt.Errorf("you cannot rate yourself")
+		}
+		if !isProvider {
+			return uuid.Nil, fmt.Errorf("only the provider can rate the customer")
+		}
+	case "garage", "mechanic":
+		if !isCarOwner {
+			return uuid.Nil, fmt.Errorf("only the customer can rate the garage or mechanic")
+		}
 	}
 
 	var garageID, mechanicID *uuid.UUID
@@ -80,19 +125,17 @@ func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in model
 		g := booking.GarageID
 		garageID = &g
 	case "mechanic":
-		if booking.MechanicID == nil {
-			// Fall back to garage when no mechanic row (garage-only job).
-			if booking.GarageID == uuid.Nil {
-				return uuid.Nil, fmt.Errorf("this booking has no mechanic or garage to review")
-			}
+		if booking.MechanicID != nil {
+			mechanicID = booking.MechanicID
+		} else if booking.GarageID != uuid.Nil {
 			g := booking.GarageID
 			garageID = &g
 			target = "garage"
 		} else {
-			mechanicID = booking.MechanicID
+			return uuid.Nil, fmt.Errorf("this booking has no mechanic or garage to review")
 		}
 	case "car_owner":
-		// Stored as a review with null garage/mechanic — identified by reviewer=provider.
+		// Review of customer: null garage/mechanic; uniqueness is (booking, reviewer)
 		garageID = nil
 		mechanicID = nil
 	}
@@ -114,7 +157,8 @@ func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in model
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("create review: %w", err)
 	}
-	// Close the job so it leaves Active lists for both apps.
+
+	// Close job after a rating so it leaves Active lists (either side may rate first).
 	_ = s.requests.UpdateStatus(ctx, booking.ServiceRequestID, "closed")
 	_ = s.bookings.SetStatus(ctx, bookingID, "closed")
 	return id, nil

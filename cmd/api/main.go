@@ -85,7 +85,7 @@ func main() {
 	bookingSvc.WithCommission(commissionSvc)
 
 	reviewRepo := repository.NewReviewRepository(queries)
-	reviewSvc := services.NewReviewService(reviewRepo, bookingRepo, requestRepo)
+	reviewSvc := services.NewReviewService(reviewRepo, bookingRepo, requestRepo).WithPool(pool)
 	reviewHandler := handlers.NewReviewHandler(reviewSvc)
 
 	healthHandler := handlers.NewHealthHandler(pool)
