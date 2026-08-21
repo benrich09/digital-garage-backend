@@ -133,7 +133,8 @@ func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 
 	requests, err := h.svc.BrowseOpen(c.Context(), lat, lng, radiusKM, 50)
 	if err != nil {
-		return apierr.JSON(c, fiber.StatusInternalServerError, "failed to list open requests")
+		// Prefer empty inbox over a hard error on the phone.
+		return c.JSON(fiber.Map{"service_requests": []any{}, "count": 0, "hint": "temporarily unavailable"})
 	}
 	// If nothing nearby (common when GPS is wrong or mechanics are far),
 	// still return the latest pending requests so the inbox is usable.

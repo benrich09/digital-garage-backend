@@ -123,6 +123,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	// that admits both rather than off garageOwner.
 	provider := auth.Group("", middleware.RequireRole(models.RoleGarageOwner, models.RoleMechanic))
 	provider.Get("/providers/me/balance", d.Commission.MyBalance)
+	provider.Post("/reviews", d.Review.Create)
 	provider.Post("/settlements/ensure", d.Commission.EnsureSettlement)
 	provider.Post("/settlements/:id/submit", d.Commission.SubmitSettlement)
 

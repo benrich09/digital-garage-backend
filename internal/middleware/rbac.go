@@ -1,14 +1,11 @@
 package middleware
 
 import (
-	"fmt"
-
 	"github.com/gofiber/fiber/v2"
 	"github.com/yourorg/digital-garage/pkg/apierr"
 )
 
-// RequireRole must run after RequireAuth + LoadProfile. It's a plain
-// allow-list check — no hierarchy, no inheritance.
+// RequireRole must run after RequireAuth + LoadProfile.
 func RequireRole(roles ...string) fiber.Handler {
 	allowed := make(map[string]struct{}, len(roles))
 	for _, r := range roles {
@@ -22,9 +19,8 @@ func RequireRole(roles ...string) fiber.Handler {
 		}
 		role := normalizeRole(user.Role)
 		if _, permitted := allowed[role]; !permitted {
-			return apierr.JSON(c, fiber.StatusForbidden,
-				fmt.Sprintf("role not permitted for this action (your role=%q; need one of %v). In Supabase SQL: update profiles set role='mechanic' where id=auth.uid();",
-					user.Role, roles))
+			// Never leak role names / SQL to end users — superadmin sees logs server-side.
+			return apierr.JSON(c, fiber.StatusForbidden, "You cannot do that from this account.")
 		}
 		if role != user.Role {
 			user.Role = role
