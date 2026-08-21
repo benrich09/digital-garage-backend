@@ -68,6 +68,7 @@ func (r *serviceRequestRepository) Create(ctx context.Context, ownerID uuid.UUID
 	if err != nil {
 		return uuid.Nil, "", err
 	}
+	// request_kind is also embedded in description as [kind:...] for routing.
 	return row.ID, row.Status, nil
 }
 

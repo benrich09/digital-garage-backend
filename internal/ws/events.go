@@ -54,6 +54,7 @@ type NewRequestMatchPayload struct {
 	Longitude        float64 `json:"longitude"`
 	DistanceKM       float64 `json:"distance_km"`
 	Description      string  `json:"description,omitempty"`
+	RequestKind      string  `json:"request_kind,omitempty"`
 }
 
 type OfferReceivedPayload struct {

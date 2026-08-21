@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"strings"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -74,6 +75,17 @@ func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, i
 	}
 	s.log.Info().Str("request_id", id.String()).Msg("service request created")
 
+	kind := in.RequestKind
+	if kind == "" {
+		kind = "mechanic_request"
+	}
+	taggedDesc := in.Description
+	if taggedDesc == "" {
+		taggedDesc = "[kind:" + kind + "]"
+	} else if !containsKindTag(taggedDesc) {
+		taggedDesc = "[kind:" + kind + "]\n" + taggedDesc
+	}
+
 	// Fan out to nearby garages that offer this category. Best-effort:
 	// a failure here shouldn't fail the request creation itself, since
 	// the request already exists and garages can still find it via the
@@ -81,55 +93,59 @@ func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, i
 	nearby, err := s.garages.ListNearbyOfferingCategory(ctx, in.Latitude, in.Longitude, geo.KMToMeters(matchRadiusKM), in.CategoryID, 25)
 	if err != nil {
 		s.log.Warn().Err(err).Msg("nearby garage matching failed, request still created")
-		return id, status, nil
+		nearby = nil
 	}
 
-	for _, g := range nearby {
-		distKM := 0.0
-		if g.DistanceKM != nil {
-			distKM = *g.DistanceKM
-		}
-		s.hub.SendToUser(g.OwnerID.String(), ws.NewEvent(ws.EventNewRequestMatch, ws.NewRequestMatchPayload{
-			ServiceRequestID: id.String(),
-			CategoryID:       in.CategoryID.String(),
-			Latitude:         in.Latitude,
-			Longitude:        in.Longitude,
-			DistanceKM:       distKM,
-			Description:      in.Description,
-		}))
-	}
-
-	// Also fan out to available field mechanics near the request so
-	// independent mechanics (not only garage owners) see the job live.
-	mechanics, mErr := s.repo.ListNearbyMechanics(ctx, in.Latitude, in.Longitude, geo.KMToMeters(matchRadiusKM), 25)
-	notified := map[string]struct{}{}
-	if mErr != nil {
-		s.log.Warn().Err(mErr).Msg("nearby mechanic matching failed, request still created")
-	} else {
-		for _, m := range mechanics {
-			pid := m.ProfileID.String()
-			notified[pid] = struct{}{}
-			s.hub.SendToUser(pid, ws.NewEvent(ws.EventNewRequestMatch, ws.NewRequestMatchPayload{
+	if kind == "garage_booking" {
+		for _, g := range nearby {
+			distKM := 0.0
+			if g.DistanceKM != nil {
+				distKM = *g.DistanceKM
+			}
+			s.hub.SendToUser(g.OwnerID.String(), ws.NewEvent(ws.EventNewRequestMatch, ws.NewRequestMatchPayload{
 				ServiceRequestID: id.String(),
 				CategoryID:       in.CategoryID.String(),
 				Latitude:         in.Latitude,
 				Longitude:        in.Longitude,
-				DistanceKM:       m.DistanceMeters / 1000.0,
-				Description:      in.Description,
+				DistanceKM:       distKM,
+				Description:      taggedDesc,
+				RequestKind:      kind,
 			}))
 		}
 	}
-	for _, g := range nearby {
-		notified[g.OwnerID.String()] = struct{}{}
+
+	// Also fan out to available field mechanics near the request so
+	// independent mechanics (not only garage owners) see the job live.
+	notified := map[string]struct{}{}
+	if kind == "mechanic_request" {
+		mechanics, mErr := s.repo.ListNearbyMechanics(ctx, in.Latitude, in.Longitude, geo.KMToMeters(matchRadiusKM), 25)
+		if mErr != nil {
+			s.log.Warn().Err(mErr).Msg("nearby mechanic matching failed, request still created")
+		} else {
+			for _, m := range mechanics {
+				pid := m.ProfileID.String()
+				notified[pid] = struct{}{}
+				s.hub.SendToUser(pid, ws.NewEvent(ws.EventNewRequestMatch, ws.NewRequestMatchPayload{
+					ServiceRequestID: id.String(),
+					CategoryID:       in.CategoryID.String(),
+					Latitude:         in.Latitude,
+					Longitude:        in.Longitude,
+					DistanceKM:       m.DistanceMeters / 1000.0,
+					Description:      taggedDesc,
+					RequestKind:      kind,
+				}))
+			}
+		}
+	}
+	if kind == "garage_booking" {
+		for _, g := range nearby {
+			notified[g.OwnerID.String()] = struct{}{}
+		}
 	}
 
 	// Always broadcast to all active providers of the matching role so inbox
 	// updates even when geo tables are empty or GPS is wrong.
 	if s.pool != nil {
-		kind := in.RequestKind
-		if kind == "" {
-			kind = "mechanic_request"
-		}
 		roleFilter := "mechanic"
 		if kind == "garage_booking" {
 			roleFilter = "garage_owner"
@@ -155,7 +171,8 @@ func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, i
 					Latitude:         in.Latitude,
 					Longitude:        in.Longitude,
 					DistanceKM:       0,
-					Description:      in.Description,
+					Description:      taggedDesc,
+					RequestKind:      kind,
 				}))
 				n++
 			}
@@ -228,4 +245,9 @@ func (s *ServiceRequestService) Transition(ctx context.Context, id uuid.UUID, ne
 		Str("to", newStatus).
 		Msg("service request transitioned")
 	return nil
+}
+
+
+func containsKindTag(s string) bool {
+	return strings.Contains(s, "[kind:")
 }
