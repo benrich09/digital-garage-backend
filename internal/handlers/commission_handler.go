@@ -134,6 +134,25 @@ func (h *CommissionHandler) MyBalance(c *fiber.Ctx) error {
 	return c.JSON(b)
 }
 
+// EnsureSettlement godoc
+// @Summary      Open a payable commission bill from current balance
+// @Tags         commission
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200  {object}  models.Settlement
+// @Router       /settlements/ensure [post]
+func (h *CommissionHandler) EnsureSettlement(c *fiber.Ctx) error {
+	user, ok := middleware.CurrentUser(c)
+	if !ok {
+		return apierr.JSON(c, fiber.StatusUnauthorized, "not authenticated")
+	}
+	st, err := h.svc.EnsureOpenSettlement(c.Context(), user.ID)
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, err.Error())
+	}
+	return c.JSON(st)
+}
+
 // SubmitSettlement godoc
 // @Summary      Report that you paid your monthly commission
 // @Description  Provider-only. Does not clear the debt — an admin must verify the reference first.

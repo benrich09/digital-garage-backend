@@ -342,6 +342,47 @@ func (s *CommissionService) VerifySettlement(
 	return nil
 }
 
+// EnsureOpenSettlement creates (or returns) a payable settlement for the
+// provider when they owe a balance but have no open monthly bill yet.
+// Amount = current balance owed; period = current month.
+func (s *CommissionService) EnsureOpenSettlement(ctx context.Context, providerID uuid.UUID) (models.Settlement, error) {
+	bal, err := s.ledger.BalanceFor(ctx, providerID)
+	if err != nil {
+		return models.Settlement{}, fmt.Errorf("balance: %w", err)
+	}
+	if bal.BalanceOwed <= 0 {
+		return models.Settlement{}, errors.New("you have no outstanding commission to pay")
+	}
+	// Prefer an existing open settlement (due/submitted/overdue).
+	list, err := s.settlements.ListForProvider(ctx, providerID)
+	if err == nil {
+		for _, st := range list {
+			if st.Status == models.SettlementDue || st.Status == models.SettlementSubmitted || st.Status == models.SettlementOverdue {
+				return st, nil
+			}
+		}
+	}
+	now := time.Now().UTC()
+	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	due := NextSettlementDue(month)
+	// Insert one row for this month with the full balance owed.
+	if s.pool == nil {
+		return models.Settlement{}, errors.New("database unavailable")
+	}
+	var id uuid.UUID
+	err = s.pool.QueryRow(ctx, `
+		insert into provider_settlements (provider_id, period_month, amount_due, due_date, status)
+		values ($1, $2::date, $3, $4::date, 'due')
+		on conflict (provider_id, period_month) do update
+		  set amount_due = greatest(provider_settlements.amount_due, excluded.amount_due)
+		returning id
+	`, providerID, month, bal.BalanceOwed, due).Scan(&id)
+	if err != nil {
+		return models.Settlement{}, fmt.Errorf("create settlement: %w", err)
+	}
+	return s.settlements.GetByID(ctx, id)
+}
+
 // ListDebtors backs the admin Debts page.
 func (s *CommissionService) ListDebtors(ctx context.Context) ([]models.LedgerBalance, error) {
 	return s.ledger.ListDebtors(ctx, 100)
