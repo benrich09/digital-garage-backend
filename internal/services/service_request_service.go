@@ -86,13 +86,27 @@ func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, i
 		Str("kind", in.RequestKind).
 		Msg("service request created")
 
-	// Best-effort: persist request_kind column if the migration exists.
+	// Best-effort: persist request_kind + preferred garage if columns exist.
 	if s.pool != nil {
 		_, _ = s.pool.Exec(ctx, `
 			update service_requests
 			set request_kind = $2
 			where id = $1
 		`, id, in.RequestKind)
+		if in.PreferredGarageID != nil {
+			_, _ = s.pool.Exec(ctx, `
+				update service_requests
+				set preferred_garage_id = $2
+				where id = $1
+			`, id, *in.PreferredGarageID)
+		}
+		if in.ScheduledAt != nil && *in.ScheduledAt != "" {
+			_, _ = s.pool.Exec(ctx, `
+				update service_requests
+				set scheduled_at = $2::timestamptz
+				where id = $1
+			`, id, *in.ScheduledAt)
+		}
 	}
 
 	kind := in.RequestKind
@@ -144,7 +158,20 @@ func (s *ServiceRequestService) broadcastNewRequest(
 	}
 
 	// Geo matches (best-effort).
-	if kind == "garage_booking" && s.garages != nil {
+	if kind == "garage_booking" {
+		// Prefer the exact garage the customer booked.
+		if s.pool != nil {
+			var ownerID string
+			if err := s.pool.QueryRow(ctx, `
+				select g.owner_id::text
+				from service_requests sr
+				join garages g on g.id = sr.preferred_garage_id
+				where sr.id = $1 and sr.preferred_garage_id is not null
+			`, id).Scan(&ownerID); err == nil && ownerID != "" {
+				notify(ownerID, 0)
+			}
+		}
+		if s.garages != nil {
 		nearby, err := s.garages.ListNearbyOfferingCategory(ctx, lat, lng, geo.KMToMeters(matchRadiusKM), categoryID, 50)
 		if err != nil {
 			s.log.Warn().Err(err).Msg("nearby garage matching failed")
@@ -156,6 +183,7 @@ func (s *ServiceRequestService) broadcastNewRequest(
 				}
 				notify(g.OwnerID.String(), dist)
 			}
+		}
 		}
 	}
 	if kind == "mechanic_request" {
@@ -259,7 +287,121 @@ func (s *ServiceRequestService) BrowseOpen(ctx context.Context, lat, lng, radius
 	if limit <= 0 {
 		limit = 50
 	}
-	return s.repo.ListOpenNear(ctx, lat, lng, geo.KMToMeters(radiusKM), limit)
+	// Prefer geo query when PostGIS works.
+	rows, err := s.repo.ListOpenNear(ctx, lat, lng, geo.KMToMeters(radiusKM), limit)
+	if err == nil && len(rows) > 0 {
+		return rows, nil
+	}
+	if err != nil {
+		s.log.Warn().Err(err).Msg("ListOpenNear failed — falling back to pending list")
+	}
+	// Fallback: all pending requests (no geo required). Apps filter by kind/role.
+	if s.pool == nil {
+		return rows, err
+	}
+	qrows, qerr := s.pool.Query(ctx, `
+		select
+			sr.id,
+			sr.description,
+			sr.status,
+			coalesce(sr.request_kind,
+				case when sr.description like '%[kind:garage_booking]%' then 'garage_booking'
+				     else 'mechanic_request' end),
+			coalesce(sr.category_id, '00000000-0000-0000-0000-000000000000'::uuid),
+			coalesce(sc.name, ''),
+			coalesce(sr.latitude, 0),
+			coalesce(sr.longitude, 0),
+			0::float8 as distance_km,
+			coalesce(sr.requested_at, sr.created_at, now()),
+			sr.car_owner_id,
+			coalesce(p.full_name, ''),
+			coalesce(p.phone, ''),
+			coalesce(p.avatar_url, ''),
+			coalesce(sr.vehicle_id, '00000000-0000-0000-0000-000000000000'::uuid),
+			coalesce(v.make, ''),
+			coalesce(v.model, ''),
+			v.year,
+			coalesce(v.plate_number, v.license_plate, '')
+		from service_requests sr
+		left join service_categories sc on sc.id = sr.category_id
+		left join profiles p on p.id = sr.car_owner_id
+		left join vehicles v on v.id = sr.vehicle_id
+		where lower(coalesce(sr.status,'')) in ('pending','quoted','open')
+		order by coalesce(sr.requested_at, sr.created_at) desc
+		limit $1
+	`, limit)
+	if qerr != nil {
+		// Minimal columns if schema differs
+		qrows2, qerr2 := s.pool.Query(ctx, `
+			select id, description, status,
+			       coalesce(request_kind, 'mechanic_request'),
+			       coalesce(latitude,0), coalesce(longitude,0),
+			       car_owner_id
+			from service_requests
+			where lower(coalesce(status,'')) in ('pending','quoted','open')
+			order by created_at desc
+			limit $1
+		`, limit)
+		if qerr2 != nil {
+			s.log.Warn().Err(qerr).Err(qerr2).Msg("pending fallback query failed")
+			return rows, err
+		}
+		defer qrows2.Close()
+		out := make([]models.OpenServiceRequest, 0)
+		for qrows2.Next() {
+			var it models.OpenServiceRequest
+			var desc *string
+			var year *int32
+			_ = year
+			if scanErr := qrows2.Scan(&it.ID, &desc, &it.Status, &it.RequestKind, &it.Latitude, &it.Longitude, &it.OwnerID); scanErr != nil {
+				continue
+			}
+			it.Description = desc
+			out = append(out, it)
+		}
+		return out, nil
+	}
+	defer qrows.Close()
+	out := make([]models.OpenServiceRequest, 0)
+	for qrows.Next() {
+		var it models.OpenServiceRequest
+		var desc *string
+		var catName, ownerName, ownerPhone, ownerAvatar, vMake, vModel, vPlate string
+		var year *int32
+		if scanErr := qrows.Scan(
+			&it.ID, &desc, &it.Status, &it.RequestKind, &it.CategoryID, &catName,
+			&it.Latitude, &it.Longitude, &it.DistanceKM, &it.RequestedAt, &it.OwnerID,
+			&ownerName, &ownerPhone, &ownerAvatar, &it.VehicleID, &vMake, &vModel, &year, &vPlate,
+		); scanErr != nil {
+			s.log.Warn().Err(scanErr).Msg("scan open request row")
+			continue
+		}
+		it.Description = desc
+		if catName != "" {
+			it.CategoryName = &catName
+		}
+		if ownerName != "" {
+			it.OwnerName = &ownerName
+		}
+		if ownerPhone != "" {
+			it.OwnerPhone = &ownerPhone
+		}
+		if ownerAvatar != "" {
+			it.OwnerAvatarURL = &ownerAvatar
+		}
+		if vMake != "" {
+			it.VehicleMake = &vMake
+		}
+		if vModel != "" {
+			it.VehicleModel = &vModel
+		}
+		it.VehicleYear = year
+		if vPlate != "" {
+			it.VehiclePlate = &vPlate
+		}
+		out = append(out, it)
+	}
+	return out, nil
 }
 
 func (s *ServiceRequestService) Transition(ctx context.Context, id uuid.UUID, newStatus string) error {

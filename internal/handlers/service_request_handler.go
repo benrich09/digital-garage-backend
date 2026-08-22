@@ -155,13 +155,9 @@ func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 			filtered = append(filtered, it)
 		}
 	}
-	// If role filter wiped the list but there ARE open requests, return all
-	// (provider app will still role-filter on the client when role is known).
-	out := filtered
-	if len(out) == 0 && len(requests) > 0 && (role == "mechanic" || role == "garage_owner") {
-		out = requests
-	}
-	return c.JSON(fiber.Map{"service_requests": out, "count": len(out)})
+	// Strict role separation: mechanics only see mechanic_request,
+	// garage owners only see garage_booking.
+	return c.JSON(fiber.Map{"service_requests": filtered, "count": len(filtered)})
 }
 
 // @Tags         service-requests
