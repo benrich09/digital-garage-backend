@@ -2,8 +2,8 @@ package services
 
 import (
 	"context"
-	"strings"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -14,11 +14,8 @@ import (
 	"github.com/yourorg/digital-garage/pkg/geo"
 )
 
-// validTransitions encodes the state machine from the schema design —
-// enforced here in application code since Postgres only stores the enum,
-// it doesn't police which transitions are legal.
 var validTransitions = map[string][]string{
-	"pending":     {"quoted", "cancelled", "expired"},
+	"pending":     {"quoted", "cancelled", "expired", "accepted"},
 	"quoted":      {"accepted", "cancelled", "expired"},
 	"accepted":    {"in_progress", "cancelled", "disputed"},
 	"in_progress": {"completed", "disputed"},
@@ -26,10 +23,7 @@ var validTransitions = map[string][]string{
 	"paid":        {"closed", "disputed"},
 }
 
-// matchRadiusKM is the default radius used to find nearby garages when
-// a new request comes in. Not exposed as user input (yet) — a natural
-// next step is making this configurable per category or per city.
-const matchRadiusKM = 200.0
+const matchRadiusKM = 500.0
 
 type ServiceRequestService struct {
 	repo    repository.ServiceRequestRepository
@@ -41,6 +35,10 @@ type ServiceRequestService struct {
 
 func NewServiceRequestService(repo repository.ServiceRequestRepository, garages repository.GarageRepository, hub *ws.Manager, pool *pgxpool.Pool, log zerolog.Logger) *ServiceRequestService {
 	return &ServiceRequestService{repo: repo, garages: garages, hub: hub, pool: pool, log: log}
+}
+
+func containsKindTag(s string) bool {
+	return strings.Contains(s, "[kind:")
 }
 
 func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, in models.CreateServiceRequestInput) (uuid.UUID, string, error) {
@@ -58,27 +56,46 @@ func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, i
 		}
 		in.CategoryID = catID
 	}
-	// Ensure vehicle exists (FK) — common cause of "failed to create".
+	// Vehicle is optional — zero UUID is fine (nullable FK).
 	if s.pool != nil && in.VehicleID != uuid.Nil {
 		var exists bool
 		_ = s.pool.QueryRow(ctx, `select exists(select 1 from vehicles where id = $1)`, in.VehicleID).Scan(&exists)
 		if !exists {
-			return uuid.Nil, "", fmt.Errorf("vehicle not found — add a vehicle in My Vehicles first")
+			// Don't fail the whole request — clear vehicle so insert succeeds.
+			s.log.Warn().Str("vehicle_id", in.VehicleID.String()).Msg("vehicle not found; creating request without vehicle")
+			in.VehicleID = uuid.Nil
 		}
 	}
 	if in.RequestKind == "" {
 		in.RequestKind = "mechanic_request"
 	}
+	// Normalize kind aliases from clients.
+	switch strings.ToLower(strings.TrimSpace(in.RequestKind)) {
+	case "booking", "garage", "garage_booking", "garage-booking":
+		in.RequestKind = "garage_booking"
+	case "mechanic", "roadside", "mechanic_request", "mechanic-request", "on_road":
+		in.RequestKind = "mechanic_request"
+	}
+
 	id, status, err := s.repo.Create(ctx, ownerID, in)
 	if err != nil {
 		return uuid.Nil, "", fmt.Errorf("create service request: %w", err)
 	}
-	s.log.Info().Str("request_id", id.String()).Msg("service request created")
+	s.log.Info().
+		Str("request_id", id.String()).
+		Str("kind", in.RequestKind).
+		Msg("service request created")
+
+	// Best-effort: persist request_kind column if the migration exists.
+	if s.pool != nil {
+		_, _ = s.pool.Exec(ctx, `
+			update service_requests
+			set request_kind = $2
+			where id = $1
+		`, id, in.RequestKind)
+	}
 
 	kind := in.RequestKind
-	if kind == "" {
-		kind = "mechanic_request"
-	}
 	taggedDesc := in.Description
 	if taggedDesc == "" {
 		taggedDesc = "[kind:" + kind + "]"
@@ -86,104 +103,139 @@ func (s *ServiceRequestService) Create(ctx context.Context, ownerID uuid.UUID, i
 		taggedDesc = "[kind:" + kind + "]\n" + taggedDesc
 	}
 
-	// Fan out to nearby garages that offer this category. Best-effort:
-	// a failure here shouldn't fail the request creation itself, since
-	// the request already exists and garages can still find it via the
-	// "browse open requests near me" endpoint.
-	nearby, err := s.garages.ListNearbyOfferingCategory(ctx, in.Latitude, in.Longitude, geo.KMToMeters(matchRadiusKM), in.CategoryID, 25)
-	if err != nil {
-		s.log.Warn().Err(err).Msg("nearby garage matching failed, request still created")
-		nearby = nil
+	// Notify every relevant provider. Geo is best-effort; role broadcast is required.
+	s.broadcastNewRequest(ctx, id, in.CategoryID, in.Latitude, in.Longitude, taggedDesc, kind)
+
+	return id, status, nil
+}
+
+// broadcastNewRequest pushes WS events to mechanics (for mechanic_request)
+// or garage owners (for garage_booking). Always includes a role-wide fallback
+// so empty geo tables / missing current_location never hide jobs.
+func (s *ServiceRequestService) broadcastNewRequest(
+	ctx context.Context,
+	id, categoryID uuid.UUID,
+	lat, lng float64,
+	desc, kind string,
+) {
+	if s.hub == nil {
+		s.log.Warn().Msg("ws hub nil — cannot notify providers")
+		return
 	}
 
-	if kind == "garage_booking" {
-		for _, g := range nearby {
-			distKM := 0.0
-			if g.DistanceKM != nil {
-				distKM = *g.DistanceKM
+	notified := map[string]struct{}{}
+	notify := func(pid string, distKM float64) {
+		if pid == "" {
+			return
+		}
+		if _, ok := notified[pid]; ok {
+			return
+		}
+		notified[pid] = struct{}{}
+		s.hub.SendToUser(pid, ws.NewEvent(ws.EventNewRequestMatch, ws.NewRequestMatchPayload{
+			ServiceRequestID: id.String(),
+			CategoryID:       categoryID.String(),
+			Latitude:         lat,
+			Longitude:        lng,
+			DistanceKM:       distKM,
+			Description:      desc,
+			RequestKind:      kind,
+		}))
+	}
+
+	// Geo matches (best-effort).
+	if kind == "garage_booking" && s.garages != nil {
+		nearby, err := s.garages.ListNearbyOfferingCategory(ctx, lat, lng, geo.KMToMeters(matchRadiusKM), categoryID, 50)
+		if err != nil {
+			s.log.Warn().Err(err).Msg("nearby garage matching failed")
+		} else {
+			for _, g := range nearby {
+				dist := 0.0
+				if g.DistanceKM != nil {
+					dist = *g.DistanceKM
+				}
+				notify(g.OwnerID.String(), dist)
 			}
-			s.hub.SendToUser(g.OwnerID.String(), ws.NewEvent(ws.EventNewRequestMatch, ws.NewRequestMatchPayload{
-				ServiceRequestID: id.String(),
-				CategoryID:       in.CategoryID.String(),
-				Latitude:         in.Latitude,
-				Longitude:        in.Longitude,
-				DistanceKM:       distKM,
-				Description:      taggedDesc,
-				RequestKind:      kind,
-			}))
 		}
 	}
-
-	// Also fan out to available field mechanics near the request so
-	// independent mechanics (not only garage owners) see the job live.
-	notified := map[string]struct{}{}
 	if kind == "mechanic_request" {
-		mechanics, mErr := s.repo.ListNearbyMechanics(ctx, in.Latitude, in.Longitude, geo.KMToMeters(matchRadiusKM), 25)
+		mechanics, mErr := s.repo.ListNearbyMechanics(ctx, lat, lng, geo.KMToMeters(matchRadiusKM), 50)
 		if mErr != nil {
-			s.log.Warn().Err(mErr).Msg("nearby mechanic matching failed, request still created")
+			s.log.Warn().Err(mErr).Msg("nearby mechanic matching failed")
 		} else {
 			for _, m := range mechanics {
-				pid := m.ProfileID.String()
-				notified[pid] = struct{}{}
-				s.hub.SendToUser(pid, ws.NewEvent(ws.EventNewRequestMatch, ws.NewRequestMatchPayload{
-					ServiceRequestID: id.String(),
-					CategoryID:       in.CategoryID.String(),
-					Latitude:         in.Latitude,
-					Longitude:        in.Longitude,
-					DistanceKM:       m.DistanceMeters / 1000.0,
-					Description:      taggedDesc,
-					RequestKind:      kind,
-				}))
+				notify(m.ProfileID.String(), m.DistanceMeters/1000.0)
 			}
 		}
 	}
-	if kind == "garage_booking" {
-		for _, g := range nearby {
-			notified[g.OwnerID.String()] = struct{}{}
-		}
-	}
 
-	// Always broadcast to all active providers of the matching role so inbox
-	// updates even when geo tables are empty or GPS is wrong.
+	// Role-wide fallback — always runs so inbox fills even with no GPS.
 	if s.pool != nil {
 		roleFilter := "mechanic"
 		if kind == "garage_booking" {
 			roleFilter = "garage_owner"
 		}
+		// 1) profiles.role
 		rows, err := s.pool.Query(ctx, `
 			select id::text from profiles
-			where role = $1 and coalesce(is_active, true) = true
-			limit 100
+			where lower(replace(coalesce(role,''), ' ', '_')) = $1
+			  and coalesce(is_active, true) = true
+			limit 200
 		`, roleFilter)
 		if err != nil {
-			s.log.Warn().Err(err).Msg("broadcast fallback: list providers failed")
+			s.log.Warn().Err(err).Msg("broadcast fallback: profiles query failed")
 		} else {
-			defer rows.Close()
-			n := 0
 			for rows.Next() {
 				var pid string
-				if rows.Scan(&pid) != nil || pid == "" {
-					continue
+				if rows.Scan(&pid) == nil {
+					notify(pid, 0)
 				}
-				s.hub.SendToUser(pid, ws.NewEvent(ws.EventNewRequestMatch, ws.NewRequestMatchPayload{
-					ServiceRequestID: id.String(),
-					CategoryID:       in.CategoryID.String(),
-					Latitude:         in.Latitude,
-					Longitude:        in.Longitude,
-					DistanceKM:       0,
-					Description:      taggedDesc,
-					RequestKind:      kind,
-				}))
-				n++
 			}
-			s.log.Info().Int("providers", n).Str("request_id", id.String()).Msg("broadcast fallback: notified all active providers")
+			rows.Close()
+		}
+		// 2) mechanics table → profile_id (covers role typos)
+		if kind == "mechanic_request" {
+			mrows, merr := s.pool.Query(ctx, `
+				select distinct profile_id::text from mechanics
+				where profile_id is not null
+				limit 200
+			`)
+			if merr == nil {
+				for mrows.Next() {
+					var pid string
+					if mrows.Scan(&pid) == nil {
+						notify(pid, 0)
+					}
+				}
+				mrows.Close()
+			}
+		}
+		// 3) garages.owner_id
+		if kind == "garage_booking" {
+			grows, gerr := s.pool.Query(ctx, `
+				select distinct owner_id::text from garages
+				where owner_id is not null
+				limit 200
+			`)
+			if gerr == nil {
+				for grows.Next() {
+					var pid string
+					if grows.Scan(&pid) == nil {
+						notify(pid, 0)
+					}
+				}
+				grows.Close()
+			}
 		}
 	}
 
-	return id, status, nil
+	s.log.Info().
+		Int("notified", len(notified)).
+		Str("kind", kind).
+		Str("request_id", id.String()).
+		Msg("broadcast new request to providers")
 }
 
-// Cancel lets the car owner withdraw a pending/quoted request.
 func (s *ServiceRequestService) Cancel(ctx context.Context, id, ownerID uuid.UUID) error {
 	if err := s.repo.Cancel(ctx, id, ownerID); err != nil {
 		return fmt.Errorf("cancel service request: %w", err)
@@ -200,24 +252,16 @@ func (s *ServiceRequestService) ListMine(ctx context.Context, ownerID uuid.UUID)
 	return s.repo.ListByOwner(ctx, ownerID, 50)
 }
 
-// BrowseOpen returns pending requests near a point (the provider's garage
-// or current location). This is the "catch up on work I missed while
-// offline" companion to the live new_request_match WebSocket event.
 func (s *ServiceRequestService) BrowseOpen(ctx context.Context, lat, lng, radiusKM float64, limit int32) ([]models.OpenServiceRequest, error) {
 	if radiusKM <= 0 {
 		radiusKM = matchRadiusKM
 	}
 	if limit <= 0 {
-		limit = 25
+		limit = 50
 	}
 	return s.repo.ListOpenNear(ctx, lat, lng, geo.KMToMeters(radiusKM), limit)
 }
 
-// Transition moves a request to newStatus if, and only if, that move is
-// legal from its current status. Everything here is application-level
-// validation; the actual row update still goes through RLS in Postgres,
-// so a caller without rights to touch the row will still be rejected
-// there even if this check passes.
 func (s *ServiceRequestService) Transition(ctx context.Context, id uuid.UUID, newStatus string) error {
 	current, err := s.repo.Get(ctx, id)
 	if err != nil {
@@ -245,9 +289,4 @@ func (s *ServiceRequestService) Transition(ctx context.Context, id uuid.UUID, ne
 		Str("to", newStatus).
 		Msg("service request transitioned")
 	return nil
-}
-
-
-func containsKindTag(s string) bool {
-	return strings.Contains(s, "[kind:")
 }

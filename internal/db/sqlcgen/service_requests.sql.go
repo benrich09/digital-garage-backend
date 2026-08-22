@@ -13,7 +13,8 @@ var ErrNoRows = errors.New("no rows")
 const createServiceRequest = `-- name: CreateServiceRequest :one
 insert into service_requests (car_owner_id, vehicle_id, category_id, description, pickup_location, photo_urls)
 values (
-  $1, $2,
+  $1,
+  nullif($2::uuid, '00000000-0000-0000-0000-000000000000'::uuid),
   nullif($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid),
   $4,
   ST_SetSRID(ST_MakePoint($5::float8, $6::float8), 4326)::geography,
@@ -187,24 +188,26 @@ func (q *Queries) CancelServiceRequest(ctx context.Context, arg CancelServiceReq
 }
 
 const listNearbyAvailableMechanics = `-- name: ListNearbyAvailableMechanics :many
+-- Prefer nearby mechanics; if current_location is null still return the row
+-- so matching works before the provider has sent GPS.
 select
   m.id as mechanic_id,
   m.profile_id,
   m.garage_id,
-  ST_Y(m.current_location::geometry) as latitude,
-  ST_X(m.current_location::geometry) as longitude,
-  ST_Distance(
-    m.current_location,
-    ST_SetSRID(ST_MakePoint($1::float8, $2::float8), 4326)::geography
-  ) as distance_meters
+  coalesce(ST_Y(m.current_location::geometry), 0) as latitude,
+  coalesce(ST_X(m.current_location::geometry), 0) as longitude,
+  case
+    when m.current_location is null then 0
+    else ST_Distance(
+      m.current_location,
+      ST_SetSRID(ST_MakePoint($1::float8, $2::float8), 4326)::geography
+    )
+  end as distance_meters
 from mechanics m
-where m.current_location is not null
-  and ST_DWithin(
-    m.current_location,
-    ST_SetSRID(ST_MakePoint($1::float8, $2::float8), 4326)::geography,
-    $3::float8
-  )
-order by distance_meters asc
+where m.profile_id is not null
+order by
+  case when m.current_location is null then 1 else 0 end,
+  distance_meters asc
 limit $4::int
 `
 

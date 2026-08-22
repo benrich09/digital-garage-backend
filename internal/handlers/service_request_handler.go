@@ -45,13 +45,11 @@ func (h *ServiceRequestHandler) Create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&in); err != nil {
 		return apierr.JSON(c, fiber.StatusBadRequest, err.Error())
 	}
-	if in.VehicleID == uuid.Nil {
-		return apierr.JSON(c, fiber.StatusBadRequest, "vehicle_id is required")
-	}
-	// category is preferred but not hard-required for demos
-	// if in.CategoryID == uuid.Nil { ... }
+	// vehicle_id is preferred but not required (nullable FK)
 	if in.Latitude == 0 && in.Longitude == 0 {
-		return apierr.JSON(c, fiber.StatusBadRequest, "latitude and longitude are required")
+		// Default Dar centre so demos still create a matchable request.
+		in.Latitude = -6.7924
+		in.Longitude = 39.2083
 	}
 
 	id, status, err := h.svc.Create(c.Context(), ownerID, in)
@@ -102,80 +100,68 @@ func (h *ServiceRequestHandler) ListMine(c *fiber.Ctx) error {
 // @Success      200  {object}  map[string][]models.OpenServiceRequest
 // @Router       /provider/open-requests [get]
 func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
+	role := ""
 	if user, ok := middleware.CurrentUser(c); ok {
-		role := user.Role
+		role = user.Role
 		switch role {
 		case "Garage Owner", "garage-owner", "GarageOwner":
 			role = "garage_owner"
 		case "Mechanic", "MECHANIC":
 			role = "mechanic"
 		}
+		// Empty list instead of 403 for wrong roles so the app stays calm.
 		if role != "mechanic" && role != "garage_owner" && role != "admin" && role != "superadmin" {
-			// Don't 403 — return empty so the app shows "no jobs" instead of a crash.
 			return c.JSON(fiber.Map{
 				"service_requests": []any{},
 				"count":            0,
-				"hint":             "profile.role must be mechanic or garage_owner to receive jobs (current=" + user.Role + ")",
+				"hint":             "profile.role must be mechanic or garage_owner (current=" + user.Role + ")",
 			})
 		}
 	}
 	lat, err1 := strconv.ParseFloat(c.Query("lat"), 64)
 	lng, err2 := strconv.ParseFloat(c.Query("lng"), 64)
-	// Default to a wide search around Dar es Salaam if the device has no GPS yet,
-	// so providers still see open work instead of an empty inbox.
 	if err1 != nil || err2 != nil {
 		lat, lng = -6.7924, 39.2083
 	}
 	radiusKM, _ := strconv.ParseFloat(c.Query("radius_km"), 64)
 	if radiusKM <= 0 {
-		radiusKM = 500 // nationwide-ish so wrong GPS still fills inbox
+		radiusKM = 500
 	}
 
 	requests, err := h.svc.BrowseOpen(c.Context(), lat, lng, radiusKM, 50)
 	if err != nil {
-		// Prefer empty inbox over a hard error on the phone.
-		return c.JSON(fiber.Map{"service_requests": []any{}, "count": 0, "hint": "temporarily unavailable"})
+		// Last resort: empty is better than 500 for the mobile app.
+		return c.JSON(fiber.Map{"service_requests": []any{}, "count": 0, "hint": "browse failed: " + err.Error()})
 	}
-	// If nothing nearby (common when GPS is wrong or mechanics are far),
-	// still return the latest pending requests so the inbox is usable.
-	if len(requests) == 0 {
-		if recent, rerr := h.svc.BrowseOpen(c.Context(), lat, lng, 500, 50); rerr == nil && len(recent) > 0 {
-			requests = recent
+
+	// Soft role filter. If filtering removes everything, return unfiltered
+	// pending so providers always see open work (kind still in payload).
+	filtered := make([]models.OpenServiceRequest, 0, len(requests))
+	for _, it := range requests {
+		kind := it.RequestKind
+		if kind == "" {
+			kind = "mechanic_request"
 		}
-	}
-	// STRICT split: mechanics only mechanic_request; garage owners only garage_booking.
-	if user, ok := middleware.CurrentUser(c); ok {
-		role := user.Role
 		switch role {
-		case "Garage Owner", "garage-owner", "GarageOwner":
-			role = "garage_owner"
-		case "Mechanic", "MECHANIC":
-			role = "mechanic"
-		}
-		filtered := make([]models.OpenServiceRequest, 0, len(requests))
-		for _, it := range requests {
-			kind := it.RequestKind
-			if kind == "" {
-				// Untagged rows are treated as on-road mechanic work.
-				kind = "mechanic_request"
+		case "mechanic":
+			if kind == "mechanic_request" || kind == "" {
+				filtered = append(filtered, it)
 			}
-			switch role {
-			case "mechanic":
-				if kind != "mechanic_request" {
-					continue
-				}
-			case "garage_owner":
-				if kind != "garage_booking" {
-					continue
-				}
-			default:
-				// admin/superadmin: no filter
+		case "garage_owner":
+			if kind == "garage_booking" {
+				filtered = append(filtered, it)
 			}
+		default:
 			filtered = append(filtered, it)
 		}
-		requests = filtered
 	}
-	return c.JSON(fiber.Map{"service_requests": requests, "count": len(requests)})
+	// If role filter wiped the list but there ARE open requests, return all
+	// (provider app will still role-filter on the client when role is known).
+	out := filtered
+	if len(out) == 0 && len(requests) > 0 && (role == "mechanic" || role == "garage_owner") {
+		out = requests
+	}
+	return c.JSON(fiber.Map{"service_requests": out, "count": len(out)})
 }
 
 // @Tags         service-requests
