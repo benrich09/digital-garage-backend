@@ -88,6 +88,10 @@ func main() {
 	reviewSvc := services.NewReviewService(reviewRepo, bookingRepo, requestRepo).WithPool(pool)
 	reviewHandler := handlers.NewReviewHandler(reviewSvc)
 
+	jobLife := services.NewJobLifecycleService(pool, hub, log)
+	jobHandler := handlers.NewJobHandler(jobLife)
+	reportHandler := handlers.NewReportHandler(pool)
+
 	healthHandler := handlers.NewHealthHandler(pool)
 
 	app := handlers.NewRouter(handlers.Deps{
@@ -100,6 +104,8 @@ func main() {
 		Admin:              adminHandler,
 		Commission:         commissionHandler,
 		Review:             reviewHandler,
+		Job:                jobHandler,
+		Report:             reportHandler,
 		ProfileRepo:        profileRepo,
 		WSManager:          hub,
 		Verifier:           auth.NewTokenVerifier(cfg.SupabaseURL, cfg.SupabaseJWTSecret),

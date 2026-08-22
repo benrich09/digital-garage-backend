@@ -41,6 +41,8 @@ type Deps struct {
 	Admin          *AdminHandler
 	Commission     *CommissionHandler
 	Review         *ReviewHandler
+	Job            *JobHandler
+	Report         *ReportHandler
 	ProfileRepo    repository.ProfileRepository
 	WSManager      *ws.Manager
 	Verifier       *auth.TokenVerifier
@@ -151,6 +153,24 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	admin.Get("/service-requests", d.Admin.ListServiceRequests)
 	admin.Post("/providers/:id/disable", d.Admin.DisableProvider)
 	admin.Post("/providers/:id/enable", d.Admin.EnableProvider)
+	admin.Get("/reports", d.Report.ListAdmin)
+
+	// Job lifecycle (booking + mechanic request sequence)
+	// Customer actions
+	carOwner.Post("/bookings/:id/confirm-arrival", d.Job.ConfirmArrival) // garage: customer arrived
+	carOwner.Post("/bookings/:id/confirm-satisfaction", d.Job.ConfirmSatisfaction)
+	carOwner.Post("/bookings/:id/mark-paid", d.Job.CustomerPaid)
+	// Provider actions
+	fieldRoles.Post("/bookings/:id/confirm-arrival", d.Job.ConfirmArrival) // mechanic arrived
+	fieldRoles.Post("/bookings/:id/start", d.Job.Start)
+	fieldRoles.Post("/bookings/:id/finish", d.Job.Finish)
+	fieldRoles.Post("/bookings/:id/set-bill", d.Job.SetBill)
+	fieldRoles.Post("/bookings/:id/confirm-payment", d.Job.ConfirmPayment)
+	auth.Get("/bookings/:id/snapshot", d.Job.Snapshot)
+
+	// Incident reports (any authenticated role)
+	auth.Post("/reports", d.Report.Create)
+	auth.Get("/reports/mine", d.Report.ListMine)
 
 	return app
 }
