@@ -49,11 +49,17 @@ var jobTransitions = map[string][]string{
 type JobLifecycleService struct {
 	pool *pgxpool.Pool
 	hub  *ws.Manager
+	push *PushService
 	log  zerolog.Logger
 }
 
 func NewJobLifecycleService(pool *pgxpool.Pool, hub *ws.Manager, log zerolog.Logger) *JobLifecycleService {
 	return &JobLifecycleService{pool: pool, hub: hub, log: log}
+}
+
+func (s *JobLifecycleService) WithPush(p *PushService) *JobLifecycleService {
+	s.push = p
+	return s
 }
 
 type JobSnapshot struct {
@@ -207,6 +213,33 @@ func (s *JobLifecycleService) notify(ownerID, providerID string, payload ws.Stat
 	ev := ws.NewEvent(ws.EventStatusUpdate, payload)
 	if ownerID != "" {
 		s.hub.SendToUser(ownerID, ev)
+		s.log.Debug().Str("car_owner", ownerID).Str("status", payload.Status).Str("booking", payload.BookingID).Msg("status_update -> car owner")
+		if s.push != nil && payload.Status != "" {
+			title := "Job update"
+			body := "Status: " + payload.Status
+			switch payload.Status {
+			case "en_route", PhaseEnRoute:
+				title, body = "Provider on the way", "Your mechanic/garage is en route."
+			case "arrived", PhaseArrived:
+				title, body = "Provider arrived", "They are at the location."
+			case "in_progress", PhaseInProgress:
+				title, body = "Service started", "Work on your vehicle has started."
+			case "completed", PhaseCompleted, PhaseAwaitingSatisfaction:
+				title, body = "Service finished", "Please confirm satisfaction and payment."
+			case "billed", PhaseBilled, PhaseAwaitingPayment:
+				title, body = "Bill ready", "Check the amount and confirm payment."
+			case "paid", PhasePaid:
+				title, body = "Payment recorded", "Thank you. You can rate the service."
+			}
+			if uid, err := uuid.Parse(ownerID); err == nil {
+				s.push.Notify(context.Background(), uid, title, body, map[string]string{
+					"type":               "status_update",
+					"status":             payload.Status,
+					"booking_id":         payload.BookingID,
+					"service_request_id": payload.ServiceRequestID,
+				})
+			}
+		}
 	}
 	if providerID != "" {
 		s.hub.SendToUser(providerID, ev)

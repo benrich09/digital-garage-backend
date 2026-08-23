@@ -16,6 +16,7 @@ import (
 	"github.com/yourorg/digital-garage/internal/repository"
 	"github.com/yourorg/digital-garage/internal/services"
 	"github.com/yourorg/digital-garage/internal/ws"
+	"github.com/yourorg/digital-garage/pkg/fcm"
 )
 
 func main() {
@@ -44,6 +45,27 @@ func main() {
 	// note on introducing Redis Pub/Sub if this ever becomes multi-instance).
 	hub := ws.NewManager(log)
 
+	// Optional FCM push — if credentials missing, Notify is a no-op and
+	// car owners still get real-time updates via WebSocket when online.
+	var pushSvc *services.PushService
+	tokenRepo := repository.NewDeviceTokenRepository(queries)
+	fcmPath := os.Getenv("FCM_SERVICE_ACCOUNT_PATH")
+	fcmProject := os.Getenv("FIREBASE_PROJECT_ID")
+	if fcmPath != "" && fcmProject != "" {
+		fcmClient, fcmErr := fcm.NewClientFromServiceAccountFile(ctx, fcmProject, fcmPath)
+		if fcmErr != nil {
+			log.Warn().Err(fcmErr).Msg("FCM client init failed — push notifications disabled")
+		} else {
+			pushSvc = services.NewPushService(tokenRepo, fcmClient, log)
+			log.Info().Msg("FCM push notifications enabled")
+		}
+	} else {
+		log.Info().Msg("FCM_SERVICE_ACCOUNT_PATH / FIREBASE_PROJECT_ID not set — WS-only notifications")
+		// Still construct so RegisterToken works; Notify no-ops without fcm client
+		pushSvc = services.NewPushService(tokenRepo, nil, log)
+	}
+	deviceHandler := handlers.NewDeviceHandler(pushSvc)
+
 	// Wiring: repository -> service -> handler, all explicit, no DI
 	// container. On a memory-constrained box, every reflection-based
 	// wiring layer is bytes you don't get back; explicit constructor
@@ -59,7 +81,7 @@ func main() {
 	requestHandler := handlers.NewServiceRequestHandler(requestSvc)
 
 	offerRepo := repository.NewOfferRepository(pool, queries)
-	offerSvc := services.NewOfferService(offerRepo, requestRepo, garageRepo, hub, log).WithPool(pool)
+	offerSvc := services.NewOfferService(offerRepo, requestRepo, garageRepo, hub, log).WithPool(pool).WithPush(pushSvc)
 	offerHandler := handlers.NewOfferHandler(offerSvc)
 
 	bookingRepo := repository.NewBookingRepository(queries)
@@ -88,7 +110,7 @@ func main() {
 	reviewSvc := services.NewReviewService(reviewRepo, bookingRepo, requestRepo).WithPool(pool)
 	reviewHandler := handlers.NewReviewHandler(reviewSvc)
 
-	jobLife := services.NewJobLifecycleService(pool, hub, log)
+	jobLife := services.NewJobLifecycleService(pool, hub, log).WithPush(pushSvc)
 	jobHandler := handlers.NewJobHandler(jobLife)
 	reportHandler := handlers.NewReportHandler(pool)
 
@@ -106,6 +128,7 @@ func main() {
 		Review:             reviewHandler,
 		Job:                jobHandler,
 		Report:             reportHandler,
+		Device:             deviceHandler,
 		ProfileRepo:        profileRepo,
 		WSManager:          hub,
 		Verifier:           auth.NewTokenVerifier(cfg.SupabaseURL, cfg.SupabaseJWTSecret),

@@ -19,6 +19,7 @@ type OfferService struct {
 	garages  repository.GarageRepository
 	pool     *pgxpool.Pool
 	hub      *ws.Manager
+	push     *PushService
 	log      zerolog.Logger
 }
 
@@ -33,6 +34,22 @@ func (s *OfferService) WithPool(pool *pgxpool.Pool) *OfferService {
 	return s
 }
 
+func (s *OfferService) WithPush(p *PushService) *OfferService {
+	s.push = p
+	return s
+}
+
+// notifyCarOwner delivers WS + optional FCM so the customer app sees
+// booking / offer updates even when the socket is offline.
+func (s *OfferService) notifyCarOwner(ctx context.Context, carOwnerID uuid.UUID, evt ws.Event, title, body string, data map[string]string) {
+	if s.hub != nil && carOwnerID != uuid.Nil {
+		s.hub.SendToUser(carOwnerID.String(), evt)
+	}
+	if s.push != nil && carOwnerID != uuid.Nil && title != "" {
+		s.push.Notify(ctx, carOwnerID, title, body, data)
+	}
+}
+
 // Create is called by a garage_owner (or a mechanic acting for their
 // garage) submitting a quote against an open request. Notifies the car
 // owner in real time via offer_received.
@@ -44,13 +61,17 @@ func (s *OfferService) Create(ctx context.Context, in models.CreateOfferInput) (
 
 	req, err := s.requests.Get(ctx, in.ServiceRequestID)
 	if err == nil {
-		s.hub.SendToUser(req.CarOwnerID.String(), ws.NewEvent(ws.EventOfferReceived, ws.OfferReceivedPayload{
+		s.notifyCarOwner(ctx, req.CarOwnerID, ws.NewEvent(ws.EventOfferReceived, ws.OfferReceivedPayload{
 			ServiceRequestID: in.ServiceRequestID.String(),
 			OfferID:          id.String(),
 			GarageID:         in.GarageID.String(),
 			Price:            in.Price,
 			EtaMinutes:       in.EtaMinutes,
-		}))
+		}), "New offer", "A provider sent you a quote. Open the app to review it.", map[string]string{
+			"type":               "offer_received",
+			"service_request_id": in.ServiceRequestID.String(),
+			"offer_id":           id.String(),
+		})
 	} else {
 		s.log.Warn().Err(err).Msg("could not load request to notify car owner of new offer")
 	}
@@ -172,11 +193,50 @@ func (s *OfferService) ProviderApprove(ctx context.Context, in models.CreateOffe
 
 	req, err := s.requests.Get(ctx, in.ServiceRequestID)
 	if err == nil {
-		s.hub.SendToUser(req.CarOwnerID.String(), ws.NewEvent(ws.EventRequestAccepted, ws.RequestAcceptedPayload{
+		kind := ""
+		if s.pool != nil {
+			_ = s.pool.QueryRow(ctx, `select coalesce(request_kind,'') from service_requests where id = $1`, in.ServiceRequestID).Scan(&kind)
+		}
+		garageID := ""
+		if result.GarageID != uuid.Nil {
+			garageID = result.GarageID.String()
+		}
+		mechID := ""
+		if result.MechanicID != nil {
+			mechID = result.MechanicID.String()
+		}
+		// 1) Explicit booking_created so car app can navigate / refresh track screen
+		s.notifyCarOwner(ctx, req.CarOwnerID, ws.NewEvent(ws.EventBookingCreated, ws.BookingCreatedPayload{
+			ServiceRequestID: result.ServiceRequestID.String(),
+			BookingID:        result.BookingID.String(),
+			OfferID:          result.OfferID.String(),
+			GarageID:         garageID,
+			MechanicID:       mechID,
+			Status:           "scheduled",
+			RequestKind:      kind,
+		}), "Booking confirmed", "A provider accepted your request. Track the job in the app.", map[string]string{
+			"type":               "booking_created",
+			"service_request_id": result.ServiceRequestID.String(),
+			"booking_id":         result.BookingID.String(),
+			"request_kind":       kind,
+		})
+		// 2) Status update (existing car-app listeners)
+		s.notifyCarOwner(ctx, req.CarOwnerID, ws.NewEvent(ws.EventStatusUpdate, ws.StatusUpdatePayload{
+			ServiceRequestID: result.ServiceRequestID.String(),
+			BookingID:        result.BookingID.String(),
+			Status:           "accepted",
+		}), "", "", nil)
+		// 3) Legacy request_accepted (some builds listen for this)
+		s.notifyCarOwner(ctx, req.CarOwnerID, ws.NewEvent(ws.EventRequestAccepted, ws.RequestAcceptedPayload{
 			ServiceRequestID: result.ServiceRequestID.String(),
 			OfferID:          result.OfferID.String(),
 			BookingID:        result.BookingID.String(),
-		}))
+		}), "", "", nil)
+		s.log.Info().
+			Str("car_owner", req.CarOwnerID.String()).
+			Str("booking_id", result.BookingID.String()).
+			Str("request_id", result.ServiceRequestID.String()).
+			Msg("notified car owner of new booking")
 	}
 	_ = callerID
 	return result, nil
@@ -204,6 +264,19 @@ func (s *OfferService) Accept(ctx context.Context, offerID uuid.UUID, callerID u
 		return models.AcceptOfferResult{}, err
 	}
 
+	// Confirm booking back to the car owner (other devices / track screen)
+	s.notifyCarOwner(ctx, req.CarOwnerID, ws.NewEvent(ws.EventBookingCreated, ws.BookingCreatedPayload{
+		ServiceRequestID: result.ServiceRequestID.String(),
+		BookingID:        result.BookingID.String(),
+		OfferID:          result.OfferID.String(),
+		GarageID:         result.GarageID.String(),
+		Status:           "scheduled",
+	}), "Booking confirmed", "Your booking is confirmed. Track progress in the app.", map[string]string{
+		"type":               "booking_created",
+		"service_request_id": result.ServiceRequestID.String(),
+		"booking_id":         result.BookingID.String(),
+	})
+
 	garage, err := s.garages.GetByID(ctx, result.GarageID)
 	if err == nil {
 		s.hub.SendToUser(garage.OwnerID.String(), ws.NewEvent(ws.EventRequestAccepted, ws.RequestAcceptedPayload{
@@ -211,8 +284,33 @@ func (s *OfferService) Accept(ctx context.Context, offerID uuid.UUID, callerID u
 			OfferID:          result.OfferID.String(),
 			BookingID:        result.BookingID.String(),
 		}))
+		if s.push != nil {
+			s.push.Notify(ctx, garage.OwnerID, "Job accepted", "A car owner accepted your offer.", map[string]string{
+				"type":               "request_accepted",
+				"service_request_id": result.ServiceRequestID.String(),
+				"booking_id":         result.BookingID.String(),
+			})
+		}
 	} else {
 		s.log.Warn().Err(err).Msg("could not load garage to notify of accepted offer")
+	}
+	// Also notify assigned mechanic profile if present
+	if result.MechanicID != nil && s.pool != nil {
+		var mechProfile uuid.UUID
+		if e := s.pool.QueryRow(ctx, `select profile_id from mechanics where id = $1`, *result.MechanicID).Scan(&mechProfile); e == nil && mechProfile != uuid.Nil {
+			s.hub.SendToUser(mechProfile.String(), ws.NewEvent(ws.EventRequestAccepted, ws.RequestAcceptedPayload{
+				ServiceRequestID: result.ServiceRequestID.String(),
+				OfferID:          result.OfferID.String(),
+				BookingID:        result.BookingID.String(),
+			}))
+			if s.push != nil {
+				s.push.Notify(ctx, mechProfile, "Job accepted", "You have a new job.", map[string]string{
+					"type":               "request_accepted",
+					"booking_id":         result.BookingID.String(),
+					"service_request_id": result.ServiceRequestID.String(),
+				})
+			}
+		}
 	}
 
 	return result, nil

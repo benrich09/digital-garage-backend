@@ -75,6 +75,7 @@ func (m *Manager) SendToUser(userID string, evt Event) {
 	set, ok := m.conns[userID]
 	if !ok {
 		m.mu.RUnlock()
+		m.log.Debug().Str("user_id", userID).Str("event", string(evt.Type)).Msg("ws: user offline — event dropped (client should re-fetch via REST)")
 		return
 	}
 	// Copy the connection list out before writing, so a slow write

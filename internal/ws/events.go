@@ -24,6 +24,7 @@ const (
 	EventRequestAccepted EventType = "request_accepted"  // -> garage/mechanic, when their offer is accepted
 	EventStatusUpdate    EventType = "status_update"     // -> car owner, mechanic location/status changes during a job
 	EventJobCompleted    EventType = "job_completed"     // -> car owner + garage, when a booking is marked completed
+	EventBookingCreated  EventType = "booking_created"    // -> car owner, when provider accepts / booking is created
 
 	// Commission/settlement events (migration 0013). The platform never
 	// holds funds, so these announce record-keeping moves, not transfers.
@@ -108,4 +109,17 @@ type CommissionBookedPayload struct {
 type SettlementVerifiedPayload struct {
 	SettlementID string  `json:"settlement_id"`
 	Amount       float64 `json:"amount"`
+}
+
+
+// BookingCreatedPayload is pushed to the car owner the moment a booking
+// row exists (provider one-tap approve, or car owner accepted an offer).
+type BookingCreatedPayload struct {
+	ServiceRequestID string `json:"service_request_id"`
+	BookingID        string `json:"booking_id"`
+	OfferID          string `json:"offer_id,omitempty"`
+	GarageID         string `json:"garage_id,omitempty"`
+	MechanicID       string `json:"mechanic_id,omitempty"`
+	Status           string `json:"status"`
+	RequestKind      string `json:"request_kind,omitempty"`
 }

@@ -43,6 +43,7 @@ type Deps struct {
 	Review         *ReviewHandler
 	Job            *JobHandler
 	Report         *ReportHandler
+	Device         *DeviceHandler
 	ProfileRepo    repository.ProfileRepository
 	WSManager      *ws.Manager
 	Verifier       *auth.TokenVerifier
@@ -124,6 +125,10 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	auth.Post("/transactions/:id/confirm", d.Commission.Confirm)
 	auth.Post("/transactions/:id/dispute", d.Commission.Dispute)
 	auth.Post("/reviews", d.Review.Create)
+	if d.Device != nil {
+		auth.Post("/devices", d.Device.Register)
+		auth.Delete("/devices", d.Device.Unregister)
+	}
 
 	// shared read across roles (car owner viewing their own request,
 	// garage/mechanic viewing a matched one — enforced further by RLS)
