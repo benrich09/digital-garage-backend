@@ -27,47 +27,44 @@ func (s *ReviewService) WithPool(pool *pgxpool.Pool) *ReviewService {
 	return s
 }
 
-// Create allows mutual ratings after a job. Resolves booking by booking_id OR
-// treats the id as a service_request_id when no booking row matches.
+// Create supports mutual ratings after migration 0020:
+// car_owner → garage/mechanic; provider → car_owner.
 func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in models.CreateReviewInput) (uuid.UUID, error) {
 	if in.Rating < 1 || in.Rating > 5 {
 		return uuid.Nil, fmt.Errorf("rating must be between 1 and 5")
 	}
 	target := strings.ToLower(strings.TrimSpace(in.Target))
-	if target == "customer" {
+	if target == "customer" || target == "owner" {
 		target = "car_owner"
 	}
-	if target != "garage" && target != "mechanic" && target != "car_owner" {
-		if target == "" {
-			target = "mechanic"
-		} else {
-			return uuid.Nil, fmt.Errorf(`target must be "garage", "mechanic", or "car_owner"`)
-		}
+	if target == "" {
+		target = "mechanic"
 	}
 
-	rawID, err := uuid.Parse(in.BookingID)
+	rawID, err := uuid.Parse(strings.TrimSpace(in.BookingID))
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("invalid booking_id")
 	}
+	if s.pool == nil {
+		return uuid.Nil, fmt.Errorf("database unavailable")
+	}
 
-	bookingID, _, garageID, mechanicID, err := s.resolveBooking(ctx, rawID)
+	bookingID, requestID, garageID, mechanicID, carOwnerID, err := s.resolveBooking(ctx, rawID)
 	if err != nil {
 		return uuid.Nil, err
 	}
 
-	var gID, mID *uuid.UUID
+	var gID, mID, cID *uuid.UUID
 	switch target {
 	case "garage":
 		gID = garageID
-		if gID == nil {
-			// still allow review without FK if garage not linked
-			gID = nil
-		}
 	case "mechanic":
 		mID = mechanicID
+		if mID == nil && gID == nil {
+			gID = garageID // fallback
+		}
 	case "car_owner":
-		// provider rates customer — no garage/mechanic target columns
-		gID, mID = nil, nil
+		cID = carOwnerID
 	}
 
 	comment := strings.TrimSpace(in.Comment)
@@ -76,85 +73,73 @@ func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in model
 		commentPtr = &comment
 	}
 
-	if s.pool != nil {
-		id := uuid.New()
+	id := uuid.New()
+	_, err = s.pool.Exec(ctx, `
+		insert into reviews (id, booking_id, reviewer_id, garage_id, mechanic_id, car_owner_id, rating, comment, created_at)
+		values ($1,$2,$3,$4,$5,$6,$7,$8, now())
+	`, id, bookingID, callerID, gID, mID, cID, int32(in.Rating), commentPtr)
+	if err != nil {
+		// Without car_owner_id column (pre-0020)
 		_, err = s.pool.Exec(ctx, `
 			insert into reviews (id, booking_id, reviewer_id, garage_id, mechanic_id, rating, comment, created_at)
-			values ($1, $2, $3, $4, $5, $6, $7, now())
+			values ($1,$2,$3,$4,$5,$6,$7, now())
 		`, id, bookingID, callerID, gID, mID, int32(in.Rating), commentPtr)
 		if err != nil {
-			_, err2 := s.pool.Exec(ctx, `
+			_, err = s.pool.Exec(ctx, `
 				insert into reviews (booking_id, reviewer_id, rating, comment)
-				values ($1, $2, $3, $4)
+				values ($1,$2,$3,$4)
 			`, bookingID, callerID, int32(in.Rating), commentPtr)
-			if err2 != nil {
-				_, err3 := s.pool.Exec(ctx, `
-					insert into reviews (booking_id, reviewer_id, rating)
-					values ($1, $2, $3)
-				`, bookingID, callerID, int32(in.Rating))
-				if err3 != nil {
-					return uuid.Nil, fmt.Errorf("create review: %v", err3)
-				}
+			if err != nil {
+				return uuid.Nil, fmt.Errorf("create review: %v", err)
 			}
-			_ = s.pool.QueryRow(ctx, `
-				select id from reviews
-				where booking_id = $1 and reviewer_id = $2
-				order by created_at desc nulls last
-				limit 1
-			`, bookingID, callerID).Scan(&id)
 		}
-		return id, nil
 	}
 
-	id, err := s.reviews.Create(ctx, bookingID, callerID, gID, mID, int32(in.Rating), commentPtr)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("create review: %w", err)
-	}
+	_, _ = s.pool.Exec(ctx, `
+		update bookings set status = case
+			when status in ('paid','customer_claims_paid','awaiting_payment','completed') then 'closed'
+			else status end,
+			updated_at = now()
+		where id = $1
+	`, bookingID)
+	_ = requestID
 	return id, nil
 }
 
-func (s *ReviewService) resolveBooking(ctx context.Context, rawID uuid.UUID) (bookingID uuid.UUID, requestID uuid.UUID, garageID, mechanicID *uuid.UUID, err error) {
-	if s.pool != nil {
-		var bid, rid uuid.UUID
-		var gid, mid *uuid.UUID
-		e := s.pool.QueryRow(ctx, `
-			select id, service_request_id, garage_id, mechanic_id
-			from bookings where id = $1
-		`, rawID).Scan(&bid, &rid, &gid, &mid)
-		if e == nil {
-			return bid, rid, gid, mid, nil
-		}
+func (s *ReviewService) resolveBooking(ctx context.Context, rawID uuid.UUID) (
+	bookingID, requestID uuid.UUID, garageID, mechanicID, carOwnerID *uuid.UUID, err error,
+) {
+	var bid, rid uuid.UUID
+	var gid, mid *uuid.UUID
+	var owner uuid.UUID
+	e := s.pool.QueryRow(ctx, `
+		select b.id, b.service_request_id, b.garage_id, b.mechanic_id, sr.car_owner_id
+		from bookings b
+		join service_requests sr on sr.id = b.service_request_id
+		where b.id = $1
+	`, rawID).Scan(&bid, &rid, &gid, &mid, &owner)
+	if e != nil {
 		e = s.pool.QueryRow(ctx, `
-			select id, service_request_id, garage_id, mechanic_id
-			from bookings
-			where service_request_id = $1
-			order by created_at desc nulls last
+			select b.id, b.service_request_id, b.garage_id, b.mechanic_id, sr.car_owner_id
+			from bookings b
+			join service_requests sr on sr.id = b.service_request_id
+			where b.service_request_id = $1
+			order by b.created_at desc nulls last
 			limit 1
-		`, rawID).Scan(&bid, &rid, &gid, &mid)
-		if e == nil {
-			return bid, rid, gid, mid, nil
-		}
-		// Create shell booking if request exists so rating can complete
-		var owner uuid.UUID
-		e = s.pool.QueryRow(ctx, `select car_owner_id from service_requests where id = $1`, rawID).Scan(&owner)
-		if e == nil {
-			bid = uuid.New()
-			_, _ = s.pool.Exec(ctx, `
-				insert into bookings (id, service_request_id, status, created_at)
-				values ($1, $2, 'paid', now())
-				on conflict do nothing
-			`, bid, rawID)
-			// re-read
-			_ = s.pool.QueryRow(ctx, `
-				select id, service_request_id, garage_id, mechanic_id
-				from bookings where service_request_id = $1
-				order by created_at desc nulls last limit 1
-			`, rawID).Scan(&bid, &rid, &gid, &mid)
-			if bid != uuid.Nil {
-				return bid, rid, gid, mid, nil
-			}
-			return bid, rawID, nil, nil, nil
-		}
+		`, rawID).Scan(&bid, &rid, &gid, &mid, &owner)
 	}
-	return uuid.Nil, uuid.Nil, nil, nil, fmt.Errorf("no booking found for this job — finish service first")
+	if e != nil {
+		// shell booking
+		if e2 := s.pool.QueryRow(ctx, `select car_owner_id from service_requests where id = $1`, rawID).Scan(&owner); e2 != nil {
+			return uuid.Nil, uuid.Nil, nil, nil, nil, fmt.Errorf("no booking found for this job")
+		}
+		bid = uuid.New()
+		_, _ = s.pool.Exec(ctx, `
+			insert into bookings (id, service_request_id, status, created_at)
+			values ($1, $2, 'paid', now())
+		`, bid, rawID)
+		rid = rawID
+	}
+	co := owner
+	return bid, rid, gid, mid, &co, nil
 }
