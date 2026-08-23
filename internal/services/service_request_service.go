@@ -298,147 +298,10 @@ func (s *ServiceRequestService) BrowseOpen(ctx context.Context, lat, lng, radius
 	if err != nil {
 		s.log.Warn().Err(err).Msg("ListOpenNear failed — falling back to pending list")
 	}
-	// Fallback: all pending requests (no geo required). Apps filter by kind/role.
-	if s.pool == nil {
-		return rows, err
-	}
-	qrows, qerr := s.pool.Query(ctx, `
-		select
-			sr.id,
-			sr.description,
-			sr.status,
-			coalesce(sr.request_kind,
-				case when sr.description like '%[kind:garage_booking]%' then 'garage_booking'
-				     else 'mechanic_request' end),
-			coalesce(sr.category_id, '00000000-0000-0000-0000-000000000000'::uuid),
-			coalesce(sc.name, ''),
-			coalesce(ST_Y(sr.pickup_location::geometry), 0),
-			coalesce(ST_X(sr.pickup_location::geometry), 0),
-			0::float8 as distance_km,
-			coalesce(sr.requested_at, sr.created_at, now()),
-			sr.car_owner_id,
-			coalesce(p.full_name, ''),
-			coalesce(p.phone, ''),
-			coalesce(p.avatar_url, ''),
-			coalesce(sr.vehicle_id, '00000000-0000-0000-0000-000000000000'::uuid),
-			coalesce(v.make, ''),
-			coalesce(v.model, ''),
-			v.year,
-			coalesce(v.plate_number, v.license_plate, '')
-		from service_requests sr
-		left join service_categories sc on sc.id = sr.category_id
-		left join profiles p on p.id = sr.car_owner_id
-		left join vehicles v on v.id = sr.vehicle_id
-		where lower(coalesce(sr.status,'')) in ('pending','quoted','open')
-		order by coalesce(sr.requested_at, sr.created_at) desc
-		limit $1
-	`, limit)
-	if qerr != nil {
-		// Minimal columns if schema differs
-		qrows2, qerr2 := s.pool.Query(ctx, `
-			select id, description, status,
-			       coalesce(request_kind, 'mechanic_request'),
-			       coalesce(ST_Y(pickup_location::geometry),0),
-			       coalesce(ST_X(pickup_location::geometry),0),
-			       car_owner_id
-			from service_requests
-			where lower(coalesce(status,'')) in ('pending','quoted','open')
-			order by created_at desc
-			limit $1
-		`, limit)
-		if qerr2 != nil {
-			s.log.Warn().Err(qerr).Err(qerr2).Msg("pending fallback query failed")
-			return rows, err
-		}
-		defer qrows2.Close()
-		out := make([]models.OpenServiceRequest, 0)
-		for qrows2.Next() {
-			var it models.OpenServiceRequest
-			var desc *string
-			var year *int32
-			_ = year
-			if scanErr := qrows2.Scan(&it.ID, &desc, &it.Status, &it.RequestKind, &it.Latitude, &it.Longitude, &it.OwnerID); scanErr != nil {
-				continue
-			}
-			it.Description = desc
-			out = append(out, it)
-		}
-		return out, nil
-	}
-	defer qrows.Close()
-	out := make([]models.OpenServiceRequest, 0)
-	for qrows.Next() {
-		var it models.OpenServiceRequest
-		var desc *string
-		var catName, ownerName, ownerPhone, ownerAvatar, vMake, vModel, vPlate string
-		var year *int32
-		if scanErr := qrows.Scan(
-			&it.ID, &desc, &it.Status, &it.RequestKind, &it.CategoryID, &catName,
-			&it.Latitude, &it.Longitude, &it.DistanceKM, &it.RequestedAt, &it.OwnerID,
-			&ownerName, &ownerPhone, &ownerAvatar, &it.VehicleID, &vMake, &vModel, &year, &vPlate,
-		); scanErr != nil {
-			s.log.Warn().Err(scanErr).Msg("scan open request row")
-			continue
-		}
-		it.Description = desc
-		if catName != "" {
-			it.CategoryName = &catName
-		}
-		if ownerName != "" {
-			it.OwnerName = &ownerName
-		}
-		if ownerPhone != "" {
-			it.OwnerPhone = &ownerPhone
-		}
-		if ownerAvatar != "" {
-			it.OwnerAvatarURL = &ownerAvatar
-		}
-		if vMake != "" {
-			it.VehicleMake = &vMake
-		}
-		if vModel != "" {
-			it.VehicleModel = &vModel
-		}
-		it.VehicleYear = year
-		if vPlate != "" {
-			it.VehiclePlate = &vPlate
-		}
-		out = append(out, it)
-	}
-	return out, nil
+	// Fallback uses pickup_location (geography), never latitude/longitude columns.
+	return s.ListPendingSimple(ctx, limit)
 }
 
-func (s *ServiceRequestService) Transition(ctx context.Context, id uuid.UUID, newStatus string) error {
-	current, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return fmt.Errorf("transition: load current state: %w", err)
-	}
-
-	allowed := validTransitions[current.Status]
-	ok := false
-	for _, st := range allowed {
-		if st == newStatus {
-			ok = true
-			break
-		}
-	}
-	if !ok {
-		return fmt.Errorf("illegal transition: %s -> %s", current.Status, newStatus)
-	}
-
-	if err := s.repo.UpdateStatus(ctx, id, newStatus); err != nil {
-		return fmt.Errorf("transition: update status: %w", err)
-	}
-	s.log.Info().
-		Str("request_id", id.String()).
-		Str("from", current.Status).
-		Str("to", newStatus).
-		Msg("service request transitioned")
-	return nil
-}
-
-
-// ListPendingSimple returns pending requests with minimal columns (no geo).
 func (s *ServiceRequestService) ListPendingSimple(ctx context.Context, limit int32) ([]models.OpenServiceRequest, error) {
 	if s.pool == nil {
 		return nil, fmt.Errorf("no pool")
@@ -451,11 +314,11 @@ func (s *ServiceRequestService) ListPendingSimple(ctx context.Context, limit int
 			id,
 			description,
 			status,
-			coalesce(request_kind,
+			coalesce(nullif(trim(request_kind), ''),
 				case when description like '%[kind:garage_booking]%' then 'garage_booking'
 				     else 'mechanic_request' end),
-			coalesce(ST_Y(pickup_location::geometry), 0),
-			coalesce(ST_X(pickup_location::geometry), 0),
+			coalesce(ST_Y(pickup_location::geometry), 0)::float8,
+			coalesce(ST_X(pickup_location::geometry), 0)::float8,
 			car_owner_id
 		from service_requests
 		where lower(coalesce(status,'')) in ('pending','quoted','open')
@@ -463,12 +326,14 @@ func (s *ServiceRequestService) ListPendingSimple(ctx context.Context, limit int
 		limit $1
 	`, limit)
 	if err != nil {
-		// even simpler
+		s.log.Warn().Err(err).Msg("pending fallback with pickup_location failed — minimal select")
 		rows, err = s.pool.Query(ctx, `
-			select id, description, status, 'mechanic_request', 0::float8, 0::float8, car_owner_id
+			select id, description, status,
+			       coalesce(nullif(trim(request_kind), ''), 'mechanic_request'),
+			       0::float8, 0::float8, car_owner_id
 			from service_requests
-			where lower(coalesce(status,'')) = 'pending'
-			order by created_at desc
+			where lower(coalesce(status,'')) in ('pending','quoted','open')
+			order by created_at desc nulls last
 			limit $1
 		`, limit)
 		if err != nil {
@@ -489,7 +354,6 @@ func (s *ServiceRequestService) ListPendingSimple(ctx context.Context, limit int
 	return out, nil
 }
 
-// ListPendingForGarageOwner returns garage_booking rows aimed at this owner's garages.
 func (s *ServiceRequestService) ListPendingForGarageOwner(ctx context.Context, ownerID string, limit int32) ([]models.OpenServiceRequest, error) {
 	if s.pool == nil {
 		return nil, fmt.Errorf("no pool")

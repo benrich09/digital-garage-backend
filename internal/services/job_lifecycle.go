@@ -218,17 +218,17 @@ func (s *JobLifecycleService) notify(ownerID, providerID string, payload ws.Stat
 			title := "Job update"
 			body := "Status: " + payload.Status
 			switch payload.Status {
-			case "en_route", PhaseEnRoute:
+			case "en_route":
 				title, body = "Provider on the way", "Your mechanic/garage is en route."
-			case "arrived", PhaseArrived:
+			case "arrived":
 				title, body = "Provider arrived", "They are at the location."
-			case "in_progress", PhaseInProgress:
+			case "in_progress":
 				title, body = "Service started", "Work on your vehicle has started."
-			case "completed", PhaseCompleted, PhaseAwaitingSatisfaction:
+			case "completed", "awaiting_satisfaction":
 				title, body = "Service finished", "Please confirm satisfaction and payment."
-			case "billed", PhaseBilled, PhaseAwaitingPayment:
+			case "billed", "awaiting_payment":
 				title, body = "Bill ready", "Check the amount and confirm payment."
-			case "paid", PhasePaid:
+			case "paid":
 				title, body = "Payment recorded", "Thank you. You can rate the service."
 			}
 			if uid, err := uuid.Parse(ownerID); err == nil {
