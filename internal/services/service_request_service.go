@@ -312,8 +312,8 @@ func (s *ServiceRequestService) BrowseOpen(ctx context.Context, lat, lng, radius
 				     else 'mechanic_request' end),
 			coalesce(sr.category_id, '00000000-0000-0000-0000-000000000000'::uuid),
 			coalesce(sc.name, ''),
-			coalesce(sr.latitude, 0),
-			coalesce(sr.longitude, 0),
+			coalesce(ST_Y(sr.pickup_location::geometry), 0),
+			coalesce(ST_X(sr.pickup_location::geometry), 0),
 			0::float8 as distance_km,
 			coalesce(sr.requested_at, sr.created_at, now()),
 			sr.car_owner_id,
@@ -338,7 +338,8 @@ func (s *ServiceRequestService) BrowseOpen(ctx context.Context, lat, lng, radius
 		qrows2, qerr2 := s.pool.Query(ctx, `
 			select id, description, status,
 			       coalesce(request_kind, 'mechanic_request'),
-			       coalesce(latitude,0), coalesce(longitude,0),
+			       coalesce(ST_Y(pickup_location::geometry),0),
+			       coalesce(ST_X(pickup_location::geometry),0),
 			       car_owner_id
 			from service_requests
 			where lower(coalesce(status,'')) in ('pending','quoted','open')
@@ -453,8 +454,8 @@ func (s *ServiceRequestService) ListPendingSimple(ctx context.Context, limit int
 			coalesce(request_kind,
 				case when description like '%[kind:garage_booking]%' then 'garage_booking'
 				     else 'mechanic_request' end),
-			coalesce(latitude, 0),
-			coalesce(longitude, 0),
+			coalesce(ST_Y(pickup_location::geometry), 0),
+			coalesce(ST_X(pickup_location::geometry), 0),
 			car_owner_id
 		from service_requests
 		where lower(coalesce(status,'')) in ('pending','quoted','open')
@@ -499,8 +500,8 @@ func (s *ServiceRequestService) ListPendingForGarageOwner(ctx context.Context, o
 			sr.description,
 			sr.status,
 			coalesce(sr.request_kind, 'garage_booking'),
-			coalesce(sr.latitude, 0),
-			coalesce(sr.longitude, 0),
+			coalesce(ST_Y(sr.pickup_location::geometry), 0),
+			coalesce(ST_X(sr.pickup_location::geometry), 0),
 			sr.car_owner_id
 		from service_requests sr
 		join garages g on g.id = sr.preferred_garage_id

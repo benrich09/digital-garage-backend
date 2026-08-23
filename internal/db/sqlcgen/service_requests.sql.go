@@ -117,7 +117,7 @@ left join vehicles v on v.id = sr.vehicle_id
 left join service_categories sc on sc.id = sr.category_id
 where sr.status in ('pending', 'quoted')
 order by distance_meters asc nulls last, sr.requested_at desc
-limit $4::int
+limit $3::int
 `
 
 type ListOpenServiceRequestsNearParams struct {
@@ -128,7 +128,7 @@ type ListOpenServiceRequestsNearParams struct {
 }
 
 func (q *Queries) ListOpenServiceRequestsNear(ctx context.Context, arg ListOpenServiceRequestsNearParams) ([]ListOpenServiceRequestsNearRow, error) {
-	rows, err := q.db.Query(ctx, listOpenServiceRequestsNear, arg.Lng, arg.Lat, arg.RadiusMeters, arg.MaxResults)
+	rows, err := q.db.Query(ctx, listOpenServiceRequestsNear, arg.Lng, arg.Lat, arg.MaxResults)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +208,7 @@ where m.profile_id is not null
 order by
   case when m.current_location is null then 1 else 0 end,
   distance_meters asc
-limit $4::int
+limit $3::int
 `
 
 type ListNearbyAvailableMechanicsParams struct {
