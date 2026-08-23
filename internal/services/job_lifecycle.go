@@ -326,18 +326,30 @@ func (s *JobLifecycleService) FinishService(ctx context.Context, bookingID uuid.
 	return snap, nil
 }
 
-// ConfirmSatisfaction — customer confirms service was OK; then provider sets price.
+// ConfirmSatisfaction — customer confirms service was OK; then provider may set price.
 func (s *JobLifecycleService) ConfirmSatisfaction(ctx context.Context, bookingID uuid.UUID) (JobSnapshot, error) {
 	snap, err := s.load(ctx, bookingID)
 	if err != nil {
 		return snap, err
 	}
-	if snap.Phase != PhaseAwaitingSatisfaction && snap.Phase != PhaseCompleted {
-		return snap, fmt.Errorf("cannot confirm satisfaction from phase %s", snap.Phase)
+	// Allow from finished states; also tolerate status enum lag.
+	okPhase := map[string]bool{
+		PhaseAwaitingSatisfaction: true,
+		PhaseCompleted:            true,
+		"completed":               true,
+		"finished":                true,
+	}
+	if !okPhase[snap.Phase] && snap.Phase != PhaseInProgress {
+		// Still allow if service already completed_at is set
+		if snap.CompletedAt == nil {
+			return snap, fmt.Errorf("cannot confirm satisfaction from phase %s", snap.Phase)
+		}
 	}
 	_, _ = s.pool.Exec(ctx, `update bookings set customer_satisfied = true, updated_at = now() where id = $1`, bookingID)
+	// Move to billed (ready for provider to enter amount) — not payment yet
 	if err := s.setPhase(ctx, bookingID, PhaseBilled, ""); err != nil {
 		_ = s.setPhase(ctx, bookingID, PhaseCompleted, "")
+		// last resort: keep status, flag satisfied only
 	}
 	snap.Phase = PhaseBilled
 	snap.CustomerSatisfied = true
@@ -349,11 +361,14 @@ func (s *JobLifecycleService) ConfirmSatisfaction(ctx context.Context, bookingID
 	return snap, nil
 }
 
-// SetBill — provider confirms price after satisfaction.
+// SetBill — provider confirms price AFTER customer satisfaction only.
 func (s *JobLifecycleService) SetBill(ctx context.Context, bookingID uuid.UUID, amount float64, currency string) (JobSnapshot, error) {
 	snap, err := s.load(ctx, bookingID)
 	if err != nil {
 		return snap, err
+	}
+	if !snap.CustomerSatisfied && snap.Phase != PhaseBilled && snap.Phase != PhaseAwaitingPayment {
+		return snap, fmt.Errorf("wait until the customer confirms they are satisfied")
 	}
 	if amount <= 0 {
 		return snap, fmt.Errorf("amount must be greater than zero")

@@ -163,6 +163,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	fieldRoles.Post("/bookings/:id/confirm-arrival", d.Job.ConfirmArrival) // mechanic arrived
 	fieldRoles.Post("/bookings/:id/start", d.Job.Start)
 	fieldRoles.Post("/bookings/:id/finish", d.Job.Finish)
+	fieldRoles.Post("/bookings/:id/confirm-satisfaction", d.Job.ConfirmSatisfaction)
 	fieldRoles.Post("/bookings/:id/set-bill", d.Job.SetBill)
 	fieldRoles.Post("/bookings/:id/confirm-payment", d.Job.ConfirmPayment)
 	auth.Get("/bookings/:id/snapshot", d.Job.Snapshot)

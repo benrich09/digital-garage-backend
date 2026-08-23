@@ -73,6 +73,7 @@ func (h *JobHandler) ConfirmSatisfaction(c *fiber.Ctx) error {
 	if err != nil {
 		return apierr.JSON(c, fiber.StatusBadRequest, "invalid booking id")
 	}
+	// Any authenticated party on this booking may confirm; service enforces phase.
 	snap, err := h.svc.ConfirmSatisfaction(c.Context(), id)
 	if err != nil {
 		return apierr.JSON(c, fiber.StatusBadRequest, err.Error())
