@@ -192,3 +192,137 @@ func (h *AdminHandler) ListServiceRequests(c *fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{"service_requests": requests})
 }
+
+// ClearDebt waives / zeros a provider's commission debt (admin only).
+// Query/body: optional "note". Writes a credit ledger entry so balance becomes 0.
+func (h *AdminHandler) ClearDebt(c *fiber.Ctx) error {
+	if h.pool == nil {
+		return apierr.JSON(c, fiber.StatusNotImplemented, "clear debt not wired")
+	}
+	providerID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid provider id")
+	}
+	note := c.Query("note")
+	if note == "" {
+		var body struct {
+			Note string `json:"note"`
+		}
+		_ = c.BodyParser(&body)
+		note = body.Note
+	}
+	if note == "" {
+		note = "Admin waived commission debt"
+	}
+
+	// Sum current owed (positive balance = owes platform)
+	var owed float64
+	_ = h.pool.QueryRow(c.Context(), `
+		select coalesce(sum(amount), 0)
+		from commission_ledger
+		where provider_id = $1
+	`, providerID).Scan(&owed)
+
+	if owed <= 0 {
+		return c.JSON(fiber.Map{
+			"provider_id": providerID,
+			"cleared":     0,
+			"message":     "no debt to clear",
+		})
+	}
+
+	// Credit entry (negative amount) to zero the balance
+	id := uuid.New()
+	_, err = h.pool.Exec(c.Context(), `
+		insert into commission_ledger (id, provider_id, amount, currency, entry_type, note, created_at)
+		values ($1, $2, $3, 'TZS', 'waiver', $4, now())
+	`, id, providerID, -owed, note)
+	if err != nil {
+		// Fallback column names
+		_, err = h.pool.Exec(c.Context(), `
+			insert into commission_ledger (provider_id, amount, note, created_at)
+			values ($1, $2, $3, now())
+		`, providerID, -owed, note)
+		if err != nil {
+			return apierr.JSON(c, fiber.StatusInternalServerError, "failed to clear debt: "+err.Error())
+		}
+	}
+
+	// Mark open settlements as waived if table exists
+	_, _ = h.pool.Exec(c.Context(), `
+		update provider_settlements
+		set status = 'waived', verified_at = now()
+		where provider_id = $1 and status in ('open', 'submitted', 'pending')
+	`, providerID)
+
+	return c.JSON(fiber.Map{
+		"provider_id": providerID,
+		"cleared":     owed,
+		"currency":    "TZS",
+		"note":        note,
+		"status":      "cleared",
+	})
+}
+
+// DeleteServiceRequest hard-deletes a service request and related offers/bookings (admin).
+func (h *AdminHandler) DeleteServiceRequest(c *fiber.Ctx) error {
+	if h.pool == nil {
+		return apierr.JSON(c, fiber.StatusNotImplemented, "delete request not wired")
+	}
+	reqID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid request id")
+	}
+
+	ctx := c.Context()
+	// Order: reviews -> bookings -> offers -> declines -> request
+	_, _ = h.pool.Exec(ctx, `delete from reviews where booking_id in (select id from bookings where service_request_id = $1)`, reqID)
+	_, _ = h.pool.Exec(ctx, `delete from service_transactions where booking_id in (select id from bookings where service_request_id = $1) or request_id = $1 or service_request_id = $1`, reqID)
+	_, _ = h.pool.Exec(ctx, `delete from bookings where service_request_id = $1`, reqID)
+	_, _ = h.pool.Exec(ctx, `delete from offers where service_request_id = $1`, reqID)
+	_, _ = h.pool.Exec(ctx, `delete from request_declines where service_request_id = $1`, reqID)
+	_, _ = h.pool.Exec(ctx, `delete from incident_reports where service_request_id = $1`, reqID)
+
+	tag, err := h.pool.Exec(ctx, `delete from service_requests where id = $1`, reqID)
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusInternalServerError, "failed to delete request: "+err.Error())
+	}
+	if tag.RowsAffected() == 0 {
+		return apierr.JSON(c, fiber.StatusNotFound, "request not found")
+	}
+	return c.JSON(fiber.Map{"request_id": reqID, "status": "deleted"})
+}
+
+// ListAllServiceRequests returns recent service requests for admin (no geo required).
+func (h *AdminHandler) ListAllServiceRequests(c *fiber.Ctx) error {
+	if h.pool == nil {
+		return apierr.JSON(c, fiber.StatusNotImplemented, "pool not wired")
+	}
+	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := h.pool.Query(c.Context(), `
+		select id::text, coalesce(status,''), coalesce(request_kind,''),
+		       coalesce(description,''), car_owner_id::text,
+		       coalesce(requested_at, created_at)::text
+		from service_requests
+		order by coalesce(requested_at, created_at) desc
+		limit $1
+	`, limit)
+	if err != nil {
+		return c.JSON(fiber.Map{"service_requests": []any{}, "error": err.Error()})
+	}
+	defer rows.Close()
+	out := make([]fiber.Map, 0)
+	for rows.Next() {
+		var id, status, kind, desc, owner, created string
+		if rows.Scan(&id, &status, &kind, &desc, &owner, &created) == nil {
+			out = append(out, fiber.Map{
+				"id": id, "status": status, "request_kind": kind,
+				"description": desc, "car_owner_id": owner, "requested_at": created,
+			})
+		}
+	}
+	return c.JSON(fiber.Map{"service_requests": out, "count": len(out)})
+}

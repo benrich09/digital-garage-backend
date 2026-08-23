@@ -166,8 +166,11 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	admin.Delete("/garages/:id", d.Admin.DeleteGarage)
 	admin.Delete("/mechanics/:id", d.Admin.DeleteMechanic)
 	admin.Get("/service-requests", d.Admin.ListServiceRequests)
+	admin.Get("/service-requests/all", d.Admin.ListAllServiceRequests)
+	admin.Delete("/service-requests/:id", d.Admin.DeleteServiceRequest)
 	admin.Post("/providers/:id/disable", d.Admin.DisableProvider)
 	admin.Post("/providers/:id/enable", d.Admin.EnableProvider)
+	admin.Post("/providers/:id/clear-debt", d.Admin.ClearDebt)
 	admin.Get("/reports", d.Report.ListAdmin)
 
 	// Provider job actions (mechanic / garage_owner only)

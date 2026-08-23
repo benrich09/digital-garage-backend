@@ -59,9 +59,14 @@ func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in model
 	switch target {
 	case "garage":
 		gID = garageID
+		if gID == nil {
+			// still allow review without FK if garage not linked
+			gID = nil
+		}
 	case "mechanic":
 		mID = mechanicID
 	case "car_owner":
+		// provider rates customer — no garage/mechanic target columns
 		gID, mID = nil, nil
 	}
 
