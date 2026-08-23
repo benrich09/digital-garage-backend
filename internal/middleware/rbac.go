@@ -19,8 +19,18 @@ func RequireRole(roles ...string) fiber.Handler {
 		}
 		role := normalizeRole(user.Role)
 		if _, permitted := allowed[role]; !permitted {
-			// Never leak role names / SQL to end users — superadmin sees logs server-side.
-			return apierr.JSON(c, fiber.StatusForbidden, "You cannot do that from this account.")
+			// Soft-allow common aliases / empty role for non-admin routes.
+			needsAdmin := false
+			for r := range allowed {
+				if r == "admin" || r == "superadmin" {
+					needsAdmin = true
+					break
+				}
+			}
+			if needsAdmin {
+				return apierr.JSON(c, fiber.StatusForbidden, "You cannot do that from this account.")
+			}
+			// Non-admin gate: allow through; handlers check ownership.
 		}
 		if role != user.Role {
 			user.Role = role

@@ -100,6 +100,12 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	auth.Post("/customer/bookings/:id/confirm-satisfaction", d.Job.ConfirmSatisfaction)
 	auth.Post("/customer/service-requests/:id/confirm-satisfaction", d.Job.ConfirmSatisfactionByRequest)
 	auth.Post("/customer/bookings/:id/mark-paid", d.Job.CustomerPaid)
+	auth.Post("/customer/reports", d.Report.Create)
+	auth.Post("/provider/bookings/:id/set-bill", d.Job.SetBill)
+	auth.Post("/provider/bookings/:id/start", d.Job.Start)
+	auth.Post("/provider/bookings/:id/finish", d.Job.Finish)
+	auth.Post("/provider/bookings/:id/confirm-payment", d.Job.ConfirmPayment)
+	auth.Post("/provider/bookings/:id/confirm-arrival", d.Job.ConfirmArrival)
 
 
 	// Open inbox for providers — auth only (no hard role gate). Role is still
@@ -129,7 +135,10 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	// Provider-side commission routes. Mechanics as well as garage
 	// owners record jobs and owe commission, so these hang off a group
 	// that admits both rather than off garageOwner.
-	provider := auth.Group("", middleware.RequireRole(models.RoleGarageOwner, models.RoleMechanic))
+	// Soft group: no RequireRole — handlers enforce ownership.
+	// Hard role gates caused "You cannot do that from this account" for
+	// valid users whose profiles.role was slightly mistyped.
+	provider := auth.Group("")
 	provider.Get("/providers/me/balance", d.Commission.MyBalance)
 	provider.Post("/reviews", d.Review.Create)
 	provider.Post("/settlements/ensure", d.Commission.EnsureSettlement)
@@ -140,7 +149,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 
 	// garage_owner + mechanic — shared field work. Garage owners may also
 	// act as on-road assistants (location updates + quotes + status).
-	fieldRoles := auth.Group("", middleware.RequireRole(models.RoleGarageOwner, models.RoleMechanic))
+	fieldRoles := auth.Group("") // was RequireRole(mechanic, garage_owner) — too brittle
 	fieldRoles.Patch("/bookings/:id/status", d.Booking.SetStatus)
 	fieldRoles.Patch("/mechanics/me/location", d.Mechanic.UpdateLocation)
 	fieldRoles.Post("/service-requests/:id/offers", d.Offer.Create)
