@@ -291,8 +291,14 @@ func (s *CommissionService) SubmitSettlement(
 	if st.Status == models.SettlementVerified {
 		return ErrSettlementClosed
 	}
+	if reference == "" && receiptURL == "" {
+		return errors.New("attach a payment photo to continue")
+	}
 	if reference == "" {
-		return errors.New("payment reference is required")
+		reference = "photo-" + time.Now().UTC().Format("20060102-150405")
+	}
+	if method == "" {
+		method = "bank_transfer"
 	}
 
 	if err := s.settlements.MarkSubmitted(ctx, settlementID, reference, method, receiptURL, time.Now().UTC()); err != nil {

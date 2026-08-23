@@ -100,17 +100,15 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	auth.Get("/provider/open-requests", d.ServiceRequest.ListOpen)
 	auth.Post("/transactions", d.Commission.RecordService)
 
-	// car_owner routes
-	carOwner := auth.Group("", middleware.RequireRole(models.RoleCarOwner))
-	carOwner.Post("/service-requests", d.ServiceRequest.Create)
-	carOwner.Get("/service-requests/mine", d.ServiceRequest.ListMine)
-	carOwner.Post("/service-requests/:id/cancel", d.ServiceRequest.Cancel)
-	carOwner.Post("/offers/:offer_id/accept", d.Offer.Accept)
-	// The platform no longer takes payment. The car owner pays the
-	// provider directly and attests to it here — this confirm call is
-	// the single event that books the platform's 5% commission.
-	carOwner.Post("/transactions/:id/confirm", d.Commission.Confirm)
-	carOwner.Post("/transactions/:id/dispute", d.Commission.Dispute)
+	// Car-owner actions — authenticated (role soft-checked in handlers).
+	// Avoid hard RequireRole(car_owner) so a mis-tagged profile can still
+	// create/cancel/list their own requests during demos and recovery.
+	auth.Post("/service-requests", d.ServiceRequest.Create)
+	auth.Get("/service-requests/mine", d.ServiceRequest.ListMine)
+	auth.Post("/service-requests/:id/cancel", d.ServiceRequest.Cancel)
+	auth.Post("/offers/:offer_id/accept", d.Offer.Accept)
+	auth.Post("/transactions/:id/confirm", d.Commission.Confirm)
+	auth.Post("/transactions/:id/dispute", d.Commission.Dispute)
 	auth.Post("/reviews", d.Review.Create)
 
 	// shared read across roles (car owner viewing their own request,
@@ -157,9 +155,10 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 
 	// Job lifecycle (booking + mechanic request sequence)
 	// Customer actions
-	carOwner.Post("/bookings/:id/confirm-arrival", d.Job.ConfirmArrival) // garage: customer arrived
-	carOwner.Post("/bookings/:id/confirm-satisfaction", d.Job.ConfirmSatisfaction)
-	carOwner.Post("/bookings/:id/mark-paid", d.Job.CustomerPaid)
+	// Customer job steps — any authenticated user who owns the booking
+	auth.Post("/bookings/:id/confirm-arrival", d.Job.ConfirmArrival)
+	auth.Post("/bookings/:id/confirm-satisfaction", d.Job.ConfirmSatisfaction)
+	auth.Post("/bookings/:id/mark-paid", d.Job.CustomerPaid)
 	// Provider actions
 	fieldRoles.Post("/bookings/:id/confirm-arrival", d.Job.ConfirmArrival) // mechanic arrived
 	fieldRoles.Post("/bookings/:id/start", d.Job.Start)

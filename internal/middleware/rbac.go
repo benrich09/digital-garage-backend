@@ -32,17 +32,21 @@ func RequireRole(roles ...string) fiber.Handler {
 
 func normalizeRole(role string) string {
 	switch role {
-	case "Garage Owner", "garage-owner", "GarageOwner":
+	case "Garage Owner", "garage-owner", "GarageOwner", "garageowner", "GARAGE_OWNER":
 		return "garage_owner"
-	case "Mechanic", "MECHANIC":
+	case "Mechanic", "MECHANIC", "mechanic":
 		return "mechanic"
-	case "Car Owner", "car-owner", "CarOwner":
+	case "Car Owner", "car-owner", "CarOwner", "customer", "Customer", "owner", "CAR_OWNER":
 		return "car_owner"
 	case "Admin", "ADMIN":
 		return "admin"
-	case "Super Admin", "super-admin", "SuperAdmin":
+	case "Super Admin", "super-admin", "SuperAdmin", "super_admin":
 		return "superadmin"
 	default:
+		// already snake_case or unknown
+		if role == "car_owner" || role == "mechanic" || role == "garage_owner" || role == "admin" || role == "superadmin" {
+			return role
+		}
 		return role
 	}
 }
