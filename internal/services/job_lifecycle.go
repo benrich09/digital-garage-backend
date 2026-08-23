@@ -361,14 +361,13 @@ func (s *JobLifecycleService) ConfirmSatisfaction(ctx context.Context, bookingID
 	return snap, nil
 }
 
-// SetBill — provider confirms price AFTER customer satisfaction only.
+// SetBill — provider sets price after service (prefer after satisfaction).
+// Persists amount on bookings AND mirrors into service_transactions so the
+// car-owner app can read it even when WS is down.
 func (s *JobLifecycleService) SetBill(ctx context.Context, bookingID uuid.UUID, amount float64, currency string) (JobSnapshot, error) {
 	snap, err := s.load(ctx, bookingID)
 	if err != nil {
 		return snap, err
-	}
-	if !snap.CustomerSatisfied && snap.Phase != PhaseBilled && snap.Phase != PhaseAwaitingPayment {
-		return snap, fmt.Errorf("wait until the customer confirms they are satisfied")
 	}
 	if amount <= 0 {
 		return snap, fmt.Errorf("amount must be greater than zero")
@@ -376,23 +375,89 @@ func (s *JobLifecycleService) SetBill(ctx context.Context, bookingID uuid.UUID, 
 	if currency == "" {
 		currency = "TZS"
 	}
+	phase := snap.Phase
+	okToBill := snap.CustomerSatisfied ||
+		phase == PhaseBilled ||
+		phase == PhaseAwaitingPayment ||
+		phase == PhaseCompleted ||
+		phase == PhaseAwaitingSatisfaction ||
+		phase == "completed" ||
+		phase == "finished"
+	if !okToBill {
+		return snap, fmt.Errorf("wait until the customer confirms they are satisfied (current: %s)", phase)
+	}
+
+	// 1) bookings.bill_amount
 	_, err = s.pool.Exec(ctx, `
 		update bookings
-		set bill_amount = $2, currency = $3, status = $4, updated_at = now()
+		set bill_amount = $2,
+		    currency = $3,
+		    status = $4,
+		    customer_satisfied = true,
+		    updated_at = now()
 		where id = $1
 	`, bookingID, amount, currency, PhaseAwaitingPayment)
 	if err != nil {
-		// columns may not exist — still advance phase
+		s.log.Warn().Err(err).Msg("set bill with status failed — trying amount only")
+		_, err2 := s.pool.Exec(ctx, `
+			update bookings
+			set bill_amount = $2, currency = $3, updated_at = now()
+			where id = $1
+		`, bookingID, amount, currency)
+		if err2 != nil {
+			s.log.Warn().Err(err2).Msg("bill_amount column may be missing")
+		}
 		_ = s.setPhase(ctx, bookingID, PhaseAwaitingPayment, "")
 	}
+
+	// 2) Mirror into service_transactions (car-owner polls this)
+	if snap.ServiceRequestID != "" {
+		if reqID, perr := uuid.Parse(snap.ServiceRequestID); perr == nil {
+			_, terr := s.pool.Exec(ctx, `
+				insert into service_transactions (request_id, amount, currency, status, created_at)
+				values ($1, $2, $3, 'awaiting_confirmation', now())
+			`, reqID, amount, currency)
+			if terr != nil {
+				// alternate column names
+				_, _ = s.pool.Exec(ctx, `
+					insert into service_transactions (service_request_id, amount, currency, status)
+					values ($1, $2, $3, 'awaiting_confirmation')
+				`, reqID, amount, currency)
+				s.log.Warn().Err(terr).Msg("service_transactions insert failed")
+			}
+		}
+	}
+
+	// 3) Tag request description with [bill:amount]
+	if snap.ServiceRequestID != "" {
+		tag := fmt.Sprintf("[bill:%.0f %s]", amount, currency)
+		_, _ = s.pool.Exec(ctx, `
+			update service_requests
+			set description = case
+				when coalesce(description,'') = '' then $2
+				when description like '%[bill:%' then description
+				else description || E'
+' || $2
+			end,
+			updated_at = now()
+			where id = $1::uuid
+		`, snap.ServiceRequestID, tag)
+	}
+
 	snap.Phase = PhaseAwaitingPayment
 	snap.BillAmount = &amount
 	snap.Currency = currency
+	snap.CustomerSatisfied = true
 	s.notify(snap.CarOwnerID, snap.ProviderID, ws.StatusUpdatePayload{
 		ServiceRequestID: snap.ServiceRequestID,
 		BookingID:        snap.BookingID,
 		Status:           PhaseAwaitingPayment,
 	})
+	s.log.Info().
+		Str("booking_id", bookingID.String()).
+		Float64("amount", amount).
+		Str("currency", currency).
+		Msg("bill set for customer")
 	return snap, nil
 }
 
@@ -458,4 +523,69 @@ func (s *JobLifecycleService) ConfirmSatisfactionByRequest(ctx context.Context, 
 		return JobSnapshot{}, fmt.Errorf("no booking for this request yet")
 	}
 	return s.ConfirmSatisfaction(ctx, bookingID)
+}
+
+
+// GetBillByRequest returns the latest booking bill for a service request,
+// falling back to service_transactions amount.
+func (s *JobLifecycleService) GetBillByRequest(ctx context.Context, requestID uuid.UUID) (JobSnapshot, error) {
+	var bookingID uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		select id from bookings
+		where service_request_id = $1
+		order by created_at desc nulls last
+		limit 1
+	`, requestID).Scan(&bookingID)
+	if err == nil {
+		snap, err2 := s.load(ctx, bookingID)
+		if err2 == nil && snap.BillAmount != nil {
+			return snap, nil
+		}
+		if err2 == nil {
+			// try transactions
+			var amount float64
+			var currency string
+			terr := s.pool.QueryRow(ctx, `
+				select amount::float8, coalesce(currency, 'TZS')
+				from service_transactions
+				where request_id = $1
+				order by created_at desc
+				limit 1
+			`, requestID).Scan(&amount, &currency)
+			if terr != nil {
+				terr = s.pool.QueryRow(ctx, `
+					select amount::float8, coalesce(currency, 'TZS')
+					from service_transactions
+					where service_request_id = $1
+					order by created_at desc
+					limit 1
+				`, requestID).Scan(&amount, &currency)
+			}
+			if terr == nil {
+				snap.BillAmount = &amount
+				snap.Currency = currency
+				snap.Phase = PhaseAwaitingPayment
+			}
+			return snap, nil
+		}
+	}
+	// transactions only
+	var amount float64
+	var currency string
+	terr := s.pool.QueryRow(ctx, `
+		select amount::float8, coalesce(currency, 'TZS')
+		from service_transactions
+		where request_id = $1
+		order by created_at desc
+		limit 1
+	`, requestID).Scan(&amount, &currency)
+	if terr != nil {
+		return JobSnapshot{}, fmt.Errorf("no bill yet")
+	}
+	return JobSnapshot{
+		ServiceRequestID: requestID.String(),
+		Phase:            PhaseAwaitingPayment,
+		BillAmount:       &amount,
+		Currency:         currency,
+	}, nil
 }

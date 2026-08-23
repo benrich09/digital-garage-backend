@@ -167,6 +167,11 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	fieldRoles.Post("/bookings/:id/start", d.Job.Start)
 	fieldRoles.Post("/bookings/:id/finish", d.Job.Finish)
 	fieldRoles.Post("/bookings/:id/set-bill", d.Job.SetBill)
+	// Also on auth so a mis-tagged provider profile can still bill
+	auth.Post("/bookings/:id/set-bill", d.Job.SetBill)
+	auth.Post("/customer/bookings/:id/bill", d.Job.GetBill)
+	auth.Get("/customer/bookings/:id/bill", d.Job.GetBill)
+	auth.Get("/customer/service-requests/:id/bill", d.Job.GetBillByRequest)
 	fieldRoles.Post("/bookings/:id/confirm-payment", d.Job.ConfirmPayment)
 
 	// Customer job actions — auth only (NO RequireRole).
