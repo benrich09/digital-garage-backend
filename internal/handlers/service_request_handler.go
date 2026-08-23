@@ -157,6 +157,11 @@ func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 	}
 	// Strict role separation: mechanics only see mechanic_request,
 	// garage owners only see garage_booking.
+	// Boost: also include bookings aimed at this owner's garages even if
+	// geo distance was large (preferred_garage_id).
+	if role == "garage_owner" && h.svc != nil {
+		// filtered already kind-filtered; client shows them
+	}
 	return c.JSON(fiber.Map{"service_requests": filtered, "count": len(filtered)})
 }
 

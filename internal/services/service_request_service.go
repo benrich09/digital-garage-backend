@@ -157,9 +157,9 @@ func (s *ServiceRequestService) broadcastNewRequest(
 		}))
 	}
 
-	// Geo matches (best-effort).
+	// Geo matches (best-effort). Garage booking → only the chosen garage.
 	if kind == "garage_booking" {
-		// Prefer the exact garage the customer booked.
+		targeted := false
 		if s.pool != nil {
 			var ownerID string
 			if err := s.pool.QueryRow(ctx, `
@@ -169,21 +169,24 @@ func (s *ServiceRequestService) broadcastNewRequest(
 				where sr.id = $1 and sr.preferred_garage_id is not null
 			`, id).Scan(&ownerID); err == nil && ownerID != "" {
 				notify(ownerID, 0)
+				targeted = true
+				s.log.Info().Str("owner", ownerID).Str("request_id", id.String()).Msg("booking targeted to preferred garage")
 			}
 		}
-		if s.garages != nil {
-		nearby, err := s.garages.ListNearbyOfferingCategory(ctx, lat, lng, geo.KMToMeters(matchRadiusKM), categoryID, 50)
-		if err != nil {
-			s.log.Warn().Err(err).Msg("nearby garage matching failed")
-		} else {
-			for _, g := range nearby {
-				dist := 0.0
-				if g.DistanceKM != nil {
-					dist = *g.DistanceKM
+		// Only fan-out to other garages when no preferred garage was set.
+		if !targeted && s.garages != nil {
+			nearby, err := s.garages.ListNearbyOfferingCategory(ctx, lat, lng, geo.KMToMeters(matchRadiusKM), categoryID, 50)
+			if err != nil {
+				s.log.Warn().Err(err).Msg("nearby garage matching failed")
+			} else {
+				for _, g := range nearby {
+					dist := 0.0
+					if g.DistanceKM != nil {
+						dist = *g.DistanceKM
+					}
+					notify(g.OwnerID.String(), dist)
 				}
-				notify(g.OwnerID.String(), dist)
 			}
-		}
 		}
 	}
 	if kind == "mechanic_request" {
@@ -238,8 +241,8 @@ func (s *ServiceRequestService) broadcastNewRequest(
 				mrows.Close()
 			}
 		}
-		// 3) garages.owner_id
-		if kind == "garage_booking" {
+		// 3) garages.owner_id — only if nobody was notified yet (no preferred garage)
+		if kind == "garage_booking" && len(notified) == 0 {
 			grows, gerr := s.pool.Query(ctx, `
 				select distinct owner_id::text from garages
 				where owner_id is not null
