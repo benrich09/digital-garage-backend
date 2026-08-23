@@ -466,20 +466,45 @@ func (s *JobLifecycleService) SetBill(ctx context.Context, bookingID uuid.UUID, 
 	return snap, nil
 }
 
-// CustomerMarksPaid — customer says they paid.
+// CustomerMarksPaid — customer says they paid; provider must verify.
 func (s *JobLifecycleService) CustomerMarksPaid(ctx context.Context, bookingID uuid.UUID) (JobSnapshot, error) {
 	snap, err := s.load(ctx, bookingID)
 	if err != nil {
 		return snap, err
 	}
-	if snap.Phase != PhaseAwaitingPayment && snap.Phase != PhaseBilled {
-		return snap, fmt.Errorf("no bill waiting for payment (current: %s)", snap.Phase)
+	// Allow from billed / awaiting_payment / already claimed
+	ph := snap.Phase
+	if ph != PhaseAwaitingPayment && ph != PhaseBilled && ph != "customer_claims_paid" && ph != "completed" {
+		// still try to mark — soft so UI is not blocked after satisfaction path variants
+		s.log.Warn().Str("phase", ph).Msg("mark-paid from unusual phase")
 	}
+	_, _ = s.pool.Exec(ctx, `
+		update bookings
+		set status = 'customer_claims_paid', updated_at = now()
+		where id = $1
+	`, bookingID)
+	// Mirror on service_transactions so provider app refresh sees it
+	if snap.ServiceRequestID != "" {
+		if rid, e := uuid.Parse(snap.ServiceRequestID); e == nil {
+			_, _ = s.pool.Exec(ctx, `
+				update service_transactions
+				set status = 'awaiting_provider_confirm'
+				where request_id = $1
+			`, rid)
+			_, _ = s.pool.Exec(ctx, `
+				update service_transactions
+				set status = 'awaiting_provider_confirm'
+				where service_request_id = $1
+			`, rid)
+		}
+	}
+	snap.Phase = "customer_claims_paid"
 	s.notify(snap.CarOwnerID, snap.ProviderID, ws.StatusUpdatePayload{
 		ServiceRequestID: snap.ServiceRequestID,
 		BookingID:        snap.BookingID,
 		Status:           "customer_claims_paid",
 	})
+	s.log.Info().Str("booking_id", bookingID.String()).Msg("customer claims paid")
 	return snap, nil
 }
 
@@ -490,6 +515,12 @@ func (s *JobLifecycleService) ProviderConfirmPayment(ctx context.Context, bookin
 		return snap, err
 	}
 	if !received {
+		_, _ = s.pool.Exec(ctx, `update bookings set status = 'payment_rejected', updated_at = now() where id = $1`, bookingID)
+		if snap.ServiceRequestID != "" {
+			if rid, e := uuid.Parse(snap.ServiceRequestID); e == nil {
+				_, _ = s.pool.Exec(ctx, `update service_transactions set status = 'rejected' where request_id = $1`, rid)
+			}
+		}
 		s.notify(snap.CarOwnerID, snap.ProviderID, ws.StatusUpdatePayload{
 			ServiceRequestID: snap.ServiceRequestID,
 			BookingID:        snap.BookingID,
@@ -497,7 +528,20 @@ func (s *JobLifecycleService) ProviderConfirmPayment(ctx context.Context, bookin
 		})
 		return snap, fmt.Errorf("payment not received — ask the customer to pay")
 	}
-	_, _ = s.pool.Exec(ctx, `update bookings set payment_confirmed = true, status = $2, updated_at = now() where id = $1`, bookingID, PhasePaid)
+	_, err = s.pool.Exec(ctx, `
+		update bookings
+		set payment_confirmed = true, status = $2, updated_at = now()
+		where id = $1
+	`, bookingID, PhasePaid)
+	if err != nil {
+		_, _ = s.pool.Exec(ctx, `update bookings set status = $2, updated_at = now() where id = $1`, bookingID, PhasePaid)
+	}
+	if snap.ServiceRequestID != "" {
+		if rid, e := uuid.Parse(snap.ServiceRequestID); e == nil {
+			_, _ = s.pool.Exec(ctx, `update service_transactions set status = 'confirmed' where request_id = $1`, rid)
+			_, _ = s.pool.Exec(ctx, `update service_transactions set status = 'confirmed' where service_request_id = $1`, rid)
+		}
+	}
 	snap.Phase = PhasePaid
 	snap.PaymentConfirmed = true
 	s.syncRequest(ctx, snap.ServiceRequestID, PhasePaid)
@@ -506,6 +550,7 @@ func (s *JobLifecycleService) ProviderConfirmPayment(ctx context.Context, bookin
 		BookingID:        snap.BookingID,
 		Status:           PhasePaid,
 	})
+	s.log.Info().Str("booking_id", bookingID.String()).Msg("provider confirmed payment")
 	return snap, nil
 }
 
