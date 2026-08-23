@@ -335,9 +335,9 @@ func (s *JobLifecycleService) ConfirmSatisfaction(ctx context.Context, bookingID
 	// Allow from finished states; also tolerate status enum lag.
 	okPhase := map[string]bool{
 		PhaseAwaitingSatisfaction: true,
-		PhaseCompleted:            true,
-		"completed":               true,
+		PhaseCompleted:            true, // "completed"
 		"finished":                true,
+		"done":                    true,
 	}
 	if !okPhase[snap.Phase] && snap.Phase != PhaseInProgress {
 		// Still allow if service already completed_at is set
