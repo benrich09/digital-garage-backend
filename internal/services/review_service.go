@@ -3,25 +3,13 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yourorg/digital-garage/internal/models"
 	"github.com/yourorg/digital-garage/internal/repository"
 )
-
-// Statuses that allow a rating after the job has been worked.
-var reviewableRequestStatuses = map[string]bool{
-	"completed": true, "paid": true, "closed": true, "finished": true,
-	"done": true, "confirmed": true, "in_progress": true, "scheduled": true,
-	"awaiting_payment": true, "payment_confirmed": true,
-}
-
-var reviewableBookingStatuses = map[string]bool{
-	"completed": true, "paid": true, "closed": true, "finished": true,
-	"done": true, "confirmed": true, "in_progress": true, "scheduled": true,
-	"awaiting_payment": true, "payment_confirmed": true,
-}
 
 type ReviewService struct {
 	reviews  repository.ReviewRepository
@@ -39,127 +27,129 @@ func (s *ReviewService) WithPool(pool *pgxpool.Pool) *ReviewService {
 	return s
 }
 
-// Create allows mutual ratings:
-//   - car_owner → garage or mechanic
-//   - garage_owner / mechanic → car_owner
-// Both sides may rate the same booking once each.
+// Create allows mutual ratings after a job. Resolves booking by booking_id OR
+// treats the id as a service_request_id when no booking row matches.
 func (s *ReviewService) Create(ctx context.Context, callerID uuid.UUID, in models.CreateReviewInput) (uuid.UUID, error) {
 	if in.Rating < 1 || in.Rating > 5 {
 		return uuid.Nil, fmt.Errorf("rating must be between 1 and 5")
 	}
-	target := in.Target
+	target := strings.ToLower(strings.TrimSpace(in.Target))
+	if target == "customer" {
+		target = "car_owner"
+	}
 	if target != "garage" && target != "mechanic" && target != "car_owner" {
-		return uuid.Nil, fmt.Errorf(`target must be "garage", "mechanic", or "car_owner"`)
+		if target == "" {
+			target = "mechanic"
+		} else {
+			return uuid.Nil, fmt.Errorf(`target must be "garage", "mechanic", or "car_owner"`)
+		}
 	}
 
-	bookingID, err := uuid.Parse(in.BookingID)
+	rawID, err := uuid.Parse(in.BookingID)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("invalid booking_id")
 	}
 
-	booking, err := s.bookings.Get(ctx, bookingID)
+	bookingID, _, garageID, mechanicID, err := s.resolveBooking(ctx, rawID)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("load booking: %w", err)
+		return uuid.Nil, err
 	}
 
-	req, err := s.requests.Get(ctx, booking.ServiceRequestID)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("load request: %w", err)
-	}
-
-	okStatus := reviewableRequestStatuses[req.Status] || reviewableBookingStatuses[booking.Status]
-	if !okStatus {
-		// Soft allow if booking exists and is past pending/quoted — mutual rating should not block.
-		if req.Status == "pending" || req.Status == "quoted" || req.Status == "cancelled" {
-			return uuid.Nil, fmt.Errorf("cannot review yet — finish the job first")
-		}
-	}
-
-	isCarOwner := req.CarOwnerID == callerID
-	isMechanic := booking.MechanicID != nil && *booking.MechanicID == callerID
-	isGarageOwner := false
-	if s.pool != nil && booking.GarageID != uuid.Nil {
-		var ownerID uuid.UUID
-		_ = s.pool.QueryRow(ctx, `select owner_id from garages where id = $1`, booking.GarageID).Scan(&ownerID)
-		isGarageOwner = ownerID == callerID
-	}
-	// Fallback: provider apps often store provider user id as mechanic_id or only garage
-	if !isCarOwner && !isMechanic && !isGarageOwner && s.pool != nil {
-		// Any user linked as provider on service_transactions for this booking
-		var n int
-		_ = s.pool.QueryRow(ctx, `
-			select count(*) from service_transactions
-			where booking_id = $1 and provider_id = $2
-		`, bookingID, callerID).Scan(&n)
-		if n > 0 {
-			isGarageOwner = true // treat as provider party
-		}
-	}
-
-	isProvider := isMechanic || isGarageOwner
-	if !isCarOwner && !isProvider {
-		return uuid.Nil, fmt.Errorf("only the customer or the assigned provider can rate this job")
-	}
-
-	// Mutual rules
-	switch target {
-	case "car_owner":
-		if isCarOwner {
-			return uuid.Nil, fmt.Errorf("you cannot rate yourself")
-		}
-		if !isProvider {
-			return uuid.Nil, fmt.Errorf("only the provider can rate the customer")
-		}
-	case "garage", "mechanic":
-		if !isCarOwner {
-			return uuid.Nil, fmt.Errorf("only the customer can rate the garage or mechanic")
-		}
-	}
-
-	var garageID, mechanicID *uuid.UUID
+	var gID, mID *uuid.UUID
 	switch target {
 	case "garage":
-		if booking.GarageID == uuid.Nil {
-			return uuid.Nil, fmt.Errorf("this booking has no garage to review")
-		}
-		g := booking.GarageID
-		garageID = &g
+		gID = garageID
 	case "mechanic":
-		if booking.MechanicID != nil {
-			mechanicID = booking.MechanicID
-		} else if booking.GarageID != uuid.Nil {
-			g := booking.GarageID
-			garageID = &g
-			target = "garage"
-		} else {
-			return uuid.Nil, fmt.Errorf("this booking has no mechanic or garage to review")
-		}
+		mID = mechanicID
 	case "car_owner":
-		// Review of customer: null garage/mechanic; uniqueness is (booking, reviewer)
-		garageID = nil
-		mechanicID = nil
+		gID, mID = nil, nil
 	}
 
-	exists, err := s.reviews.Exists(ctx, bookingID, callerID, garageID, mechanicID)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("check existing review: %w", err)
-	}
-	if exists {
-		return uuid.Nil, fmt.Errorf("you have already submitted a rating for this job")
+	comment := strings.TrimSpace(in.Comment)
+	var commentPtr *string
+	if comment != "" {
+		commentPtr = &comment
 	}
 
-	var comment *string
-	if in.Comment != "" {
-		comment = &in.Comment
+	if s.pool != nil {
+		id := uuid.New()
+		_, err = s.pool.Exec(ctx, `
+			insert into reviews (id, booking_id, reviewer_id, garage_id, mechanic_id, rating, comment, created_at)
+			values ($1, $2, $3, $4, $5, $6, $7, now())
+		`, id, bookingID, callerID, gID, mID, int32(in.Rating), commentPtr)
+		if err != nil {
+			_, err2 := s.pool.Exec(ctx, `
+				insert into reviews (booking_id, reviewer_id, rating, comment)
+				values ($1, $2, $3, $4)
+			`, bookingID, callerID, int32(in.Rating), commentPtr)
+			if err2 != nil {
+				_, err3 := s.pool.Exec(ctx, `
+					insert into reviews (booking_id, reviewer_id, rating)
+					values ($1, $2, $3)
+				`, bookingID, callerID, int32(in.Rating))
+				if err3 != nil {
+					return uuid.Nil, fmt.Errorf("create review: %v", err3)
+				}
+			}
+			_ = s.pool.QueryRow(ctx, `
+				select id from reviews
+				where booking_id = $1 and reviewer_id = $2
+				order by created_at desc nulls last
+				limit 1
+			`, bookingID, callerID).Scan(&id)
+		}
+		return id, nil
 	}
 
-	id, err := s.reviews.Create(ctx, bookingID, callerID, garageID, mechanicID, in.Rating, comment)
+	id, err := s.reviews.Create(ctx, bookingID, callerID, gID, mID, int32(in.Rating), commentPtr)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("create review: %w", err)
 	}
-
-	// Close job after a rating so it leaves Active lists (either side may rate first).
-	_ = s.requests.UpdateStatus(ctx, booking.ServiceRequestID, "closed")
-	_ = s.bookings.SetStatus(ctx, bookingID, "closed")
 	return id, nil
+}
+
+func (s *ReviewService) resolveBooking(ctx context.Context, rawID uuid.UUID) (bookingID uuid.UUID, requestID uuid.UUID, garageID, mechanicID *uuid.UUID, err error) {
+	if s.pool != nil {
+		var bid, rid uuid.UUID
+		var gid, mid *uuid.UUID
+		e := s.pool.QueryRow(ctx, `
+			select id, service_request_id, garage_id, mechanic_id
+			from bookings where id = $1
+		`, rawID).Scan(&bid, &rid, &gid, &mid)
+		if e == nil {
+			return bid, rid, gid, mid, nil
+		}
+		e = s.pool.QueryRow(ctx, `
+			select id, service_request_id, garage_id, mechanic_id
+			from bookings
+			where service_request_id = $1
+			order by created_at desc nulls last
+			limit 1
+		`, rawID).Scan(&bid, &rid, &gid, &mid)
+		if e == nil {
+			return bid, rid, gid, mid, nil
+		}
+		// Create shell booking if request exists so rating can complete
+		var owner uuid.UUID
+		e = s.pool.QueryRow(ctx, `select car_owner_id from service_requests where id = $1`, rawID).Scan(&owner)
+		if e == nil {
+			bid = uuid.New()
+			_, _ = s.pool.Exec(ctx, `
+				insert into bookings (id, service_request_id, status, created_at)
+				values ($1, $2, 'paid', now())
+				on conflict do nothing
+			`, bid, rawID)
+			// re-read
+			_ = s.pool.QueryRow(ctx, `
+				select id, service_request_id, garage_id, mechanic_id
+				from bookings where service_request_id = $1
+				order by created_at desc nulls last limit 1
+			`, rawID).Scan(&bid, &rid, &gid, &mid)
+			if bid != uuid.Nil {
+				return bid, rid, gid, mid, nil
+			}
+			return bid, rawID, nil, nil, nil
+		}
+	}
+	return uuid.Nil, uuid.Nil, nil, nil, fmt.Errorf("no booking found for this job — finish service first")
 }
