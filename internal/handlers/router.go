@@ -94,6 +94,13 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	// --- Authenticated (any role) -------------------------------------
 	auth := app.Group("", middleware.RequireAuth(d.Verifier), middleware.LoadProfile(d.ProfileRepo))
 
+	// CUSTOMER satisfaction — unique path so it can NEVER collide with
+	// provider role-gated /bookings/:id/* routes.
+	auth.Post("/customer/bookings/:id/confirm-satisfaction", d.Job.ConfirmSatisfaction)
+	auth.Post("/customer/service-requests/:id/confirm-satisfaction", d.Job.ConfirmSatisfactionByRequest)
+	auth.Post("/customer/bookings/:id/mark-paid", d.Job.CustomerPaid)
+
+
 	// Open inbox for providers — auth only (no hard role gate). Role is still
 	// checked softly in the handler so a mis-tagged profile can still see work
 	// during demos; car owners get an empty list rather than a 403.

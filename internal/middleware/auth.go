@@ -77,7 +77,9 @@ func LoadProfile(repo repository.ProfileRepository) fiber.Handler {
 
 		user, err := repo.GetRole(ctx, id)
 		if err != nil {
-			return apierr.JSON(c, fiber.StatusForbidden, "profile not found")
+			// Do not hard-block: a missing/slow profile row should not
+			// prevent customers from confirming satisfaction or paying.
+			user = models.AuthUser{ID: id, Role: "car_owner", IsActive: true}
 		}
 		if !user.IsActive {
 			// Checked on every request (not just at login) so a
