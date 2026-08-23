@@ -135,3 +135,17 @@ func (h *JobHandler) ConfirmPayment(c *fiber.Ctx) error {
 	}
 	return c.JSON(snap)
 }
+
+
+// ConfirmSatisfactionByRequest resolves booking from service_request id.
+func (h *JobHandler) ConfirmSatisfactionByRequest(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid id")
+	}
+	snap, err := h.svc.ConfirmSatisfactionByRequest(c.Context(), id)
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, err.Error())
+	}
+	return c.JSON(snap)
+}

@@ -443,3 +443,19 @@ func (s *JobLifecycleService) ProviderConfirmPayment(ctx context.Context, bookin
 func (s *JobLifecycleService) GetSnapshot(ctx context.Context, bookingID uuid.UUID) (JobSnapshot, error) {
 	return s.load(ctx, bookingID)
 }
+
+
+// ConfirmSatisfactionByRequest finds the latest booking for a service request.
+func (s *JobLifecycleService) ConfirmSatisfactionByRequest(ctx context.Context, requestID uuid.UUID) (JobSnapshot, error) {
+	var bookingID uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		select id from bookings
+		where service_request_id = $1
+		order by created_at desc nulls last
+		limit 1
+	`, requestID).Scan(&bookingID)
+	if err != nil {
+		return JobSnapshot{}, fmt.Errorf("no booking for this request yet")
+	}
+	return s.ConfirmSatisfaction(ctx, bookingID)
+}

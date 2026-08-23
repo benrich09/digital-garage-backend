@@ -153,20 +153,26 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	admin.Post("/providers/:id/enable", d.Admin.EnableProvider)
 	admin.Get("/reports", d.Report.ListAdmin)
 
-	// Job lifecycle (booking + mechanic request sequence)
-	// Customer actions
-	// Customer job steps — any authenticated user who owns the booking
-	auth.Post("/bookings/:id/confirm-arrival", d.Job.ConfirmArrival)
-	auth.Post("/bookings/:id/confirm-satisfaction", d.Job.ConfirmSatisfaction)
-	auth.Post("/bookings/:id/mark-paid", d.Job.CustomerPaid)
-	// Provider actions
+	// Provider job actions (mechanic / garage_owner only)
+	// NOTE: do NOT put confirm-satisfaction on fieldRoles — that blocked car owners
+	// when Fiber matched the role-gated route.
 	fieldRoles.Post("/bookings/:id/confirm-arrival", d.Job.ConfirmArrival) // mechanic arrived
 	fieldRoles.Post("/bookings/:id/start", d.Job.Start)
 	fieldRoles.Post("/bookings/:id/finish", d.Job.Finish)
-	fieldRoles.Post("/bookings/:id/confirm-satisfaction", d.Job.ConfirmSatisfaction)
 	fieldRoles.Post("/bookings/:id/set-bill", d.Job.SetBill)
 	fieldRoles.Post("/bookings/:id/confirm-payment", d.Job.ConfirmPayment)
+
+	// Customer job actions — auth only (NO RequireRole).
+	// Registered AFTER fieldRoles. For paths that exist on both (confirm-arrival),
+	// Fiber uses the first match — so customer arrival for garage uses the same
+	// handler; ConfirmArrival branches on actor role.
+	auth.Post("/bookings/:id/confirm-satisfaction", d.Job.ConfirmSatisfaction)
+	auth.Post("/bookings/:id/customer-satisfied", d.Job.ConfirmSatisfaction)
+	auth.Post("/bookings/:id/mark-paid", d.Job.CustomerPaid)
 	auth.Get("/bookings/:id/snapshot", d.Job.Snapshot)
+	auth.Post("/service-requests/:id/confirm-satisfaction", d.Job.ConfirmSatisfactionByRequest)
+	// Garage customer arrival also on auth (no role gate)
+	auth.Post("/bookings/:id/confirm-arrival", d.Job.ConfirmArrival)
 
 	// Incident reports (any authenticated role)
 	auth.Post("/reports", d.Report.Create)
