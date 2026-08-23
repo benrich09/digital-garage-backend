@@ -96,6 +96,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 
 	// CUSTOMER satisfaction — unique path so it can NEVER collide with
 	// provider role-gated /bookings/:id/* routes.
+	auth.Post("/customer/bookings/:id/confirm-arrival", d.Job.ConfirmArrival)
 	auth.Post("/customer/bookings/:id/confirm-satisfaction", d.Job.ConfirmSatisfaction)
 	auth.Post("/customer/service-requests/:id/confirm-satisfaction", d.Job.ConfirmSatisfactionByRequest)
 	auth.Post("/customer/bookings/:id/mark-paid", d.Job.CustomerPaid)
@@ -163,7 +164,8 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	// Provider job actions (mechanic / garage_owner only)
 	// NOTE: do NOT put confirm-satisfaction on fieldRoles — that blocked car owners
 	// when Fiber matched the role-gated route.
-	fieldRoles.Post("/bookings/:id/confirm-arrival", d.Job.ConfirmArrival) // mechanic arrived
+	fieldRoles.Post("/bookings/:id/provider-arrived", d.Job.ConfirmArrival) // mechanic arrived
+	fieldRoles.Post("/bookings/:id/confirm-arrival", d.Job.ConfirmArrival) // keep for old provider builds
 	fieldRoles.Post("/bookings/:id/start", d.Job.Start)
 	fieldRoles.Post("/bookings/:id/finish", d.Job.Finish)
 	fieldRoles.Post("/bookings/:id/set-bill", d.Job.SetBill)

@@ -241,11 +241,16 @@ func (s *JobLifecycleService) ConfirmArrival(ctx context.Context, bookingID uuid
 		return snap, err
 	}
 	// Garage booking: only customer confirms arrival.
-	if snap.RequestKind == "garage_booking" && actorRole != "car_owner" {
-		return snap, fmt.Errorf("wait for the customer to confirm they have arrived")
+	isCustomer := actorRole == "car_owner" || actorRole == "Car Owner" || actorRole == "customer" || actorRole == "owner"
+	isProvider := actorRole == "mechanic" || actorRole == "garage_owner" || actorRole == "Garage Owner" || actorRole == "Mechanic"
+	if snap.RequestKind == "garage_booking" && !isCustomer {
+		// Still allow if path forced customer; otherwise block provider pressing too early
+		if isProvider {
+			return snap, fmt.Errorf("wait for the customer to confirm they have arrived")
+		}
 	}
 	// Mechanic request: only mechanic/provider confirms arrival.
-	if snap.RequestKind != "garage_booking" && actorRole == "car_owner" {
+	if snap.RequestKind != "garage_booking" && isCustomer {
 		return snap, fmt.Errorf("wait for the mechanic to confirm arrival")
 	}
 	if !s.canTransition(snap.Phase, PhaseArrived) && snap.Phase != PhaseScheduled && snap.Phase != PhaseEnRoute && snap.Phase != PhaseAwaitingCustomer {

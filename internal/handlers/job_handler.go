@@ -37,6 +37,11 @@ func (h *JobHandler) ConfirmArrival(c *fiber.Ctx) error {
 	if u, ok := middleware.CurrentUser(c); ok {
 		role = u.Role
 	}
+	// Customer-only routes always act as car_owner (garage arrival confirm).
+	path := string(c.Path())
+	if len(path) >= 10 && (containsStr(path, "/customer/")) {
+		role = "car_owner"
+	}
 	snap, err := h.svc.ConfirmArrival(c.Context(), id, role)
 	if err != nil {
 		return apierr.JSON(c, fiber.StatusBadRequest, err.Error())
@@ -189,4 +194,17 @@ func (h *JobHandler) GetBillByRequest(c *fiber.Ctx) error {
 		"customer_satisfied": snap.CustomerSatisfied,
 		"payment_confirmed":  snap.PaymentConfirmed,
 	})
+}
+
+
+func containsStr(s, sub string) bool {
+	return len(sub) == 0 || (len(s) >= len(sub) && indexOfStr(s, sub) >= 0)
+}
+func indexOfStr(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
 }
