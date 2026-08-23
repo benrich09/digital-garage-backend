@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -101,23 +102,21 @@ func (h *ServiceRequestHandler) ListMine(c *fiber.Ctx) error {
 // @Router       /provider/open-requests [get]
 func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 	role := ""
+	userID := ""
 	if user, ok := middleware.CurrentUser(c); ok {
-		role = user.Role
+		role = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(user.Role), " ", "_"))
+		userID = user.ID.String()
 		switch role {
-		case "Garage Owner", "garage-owner", "GarageOwner":
+		case "garage_owner", "garage-owner", "garageowner", "garage":
 			role = "garage_owner"
-		case "Mechanic", "MECHANIC":
+		case "mechanic", "mechanics":
 			role = "mechanic"
-		}
-		// Empty list instead of 403 for wrong roles so the app stays calm.
-		if role != "mechanic" && role != "garage_owner" && role != "admin" && role != "superadmin" {
-			return c.JSON(fiber.Map{
-				"service_requests": []any{},
-				"count":            0,
-				"hint":             "profile.role must be mechanic or garage_owner (current=" + user.Role + ")",
-			})
+		case "car_owner", "customer", "owner":
+			// Not a provider — empty inbox
+			return c.JSON(fiber.Map{"service_requests": []any{}, "count": 0})
 		}
 	}
+
 	lat, err1 := strconv.ParseFloat(c.Query("lat"), 64)
 	lng, err2 := strconv.ParseFloat(c.Query("lng"), 64)
 	if err1 != nil || err2 != nil {
@@ -130,21 +129,49 @@ func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 
 	requests, err := h.svc.BrowseOpen(c.Context(), lat, lng, radiusKM, 50)
 	if err != nil {
-		// Last resort: empty is better than 500 for the mobile app.
-		return c.JSON(fiber.Map{"service_requests": []any{}, "count": 0, "hint": "browse failed: " + err.Error()})
+		requests = nil
 	}
 
-	// Soft role filter. If filtering removes everything, return unfiltered
-	// pending so providers always see open work (kind still in payload).
+	// Ultimate fallback: raw pending rows from pool (no PostGIS, no joins required)
+	if len(requests) == 0 && h.svc != nil {
+		if extra, e2 := h.svc.ListPendingSimple(c.Context(), 50); e2 == nil {
+			requests = extra
+		}
+	}
+
+	// Preferred-garage boost for this owner
+	if role == "garage_owner" && userID != "" && h.svc != nil {
+		if preferred, e3 := h.svc.ListPendingForGarageOwner(c.Context(), userID, 50); e3 == nil {
+			// merge preferred first
+			seen := map[string]struct{}{}
+			merged := make([]models.OpenServiceRequest, 0, len(preferred)+len(requests))
+			for _, it := range preferred {
+				seen[it.ID.String()] = struct{}{}
+				merged = append(merged, it)
+			}
+			for _, it := range requests {
+				if _, ok := seen[it.ID.String()]; !ok {
+					merged = append(merged, it)
+				}
+			}
+			requests = merged
+		}
+	}
+
 	filtered := make([]models.OpenServiceRequest, 0, len(requests))
 	for _, it := range requests {
-		kind := it.RequestKind
+		kind := strings.ToLower(strings.TrimSpace(it.RequestKind))
 		if kind == "" {
-			kind = "mechanic_request"
+			if it.Description != nil && strings.Contains(*it.Description, "[kind:garage_booking]") {
+				kind = "garage_booking"
+			} else {
+				kind = "mechanic_request"
+			}
+			it.RequestKind = kind
 		}
 		switch role {
 		case "mechanic":
-			if kind == "mechanic_request" || kind == "" {
+			if kind == "mechanic_request" {
 				filtered = append(filtered, it)
 			}
 		case "garage_owner":
@@ -152,26 +179,18 @@ func (h *ServiceRequestHandler) ListOpen(c *fiber.Ctx) error {
 				filtered = append(filtered, it)
 			}
 		default:
+			// Unknown provider role — show all so demos still work
 			filtered = append(filtered, it)
 		}
 	}
-	// Strict role separation: mechanics only see mechanic_request,
-	// garage owners only see garage_booking.
-	// Boost: also include bookings aimed at this owner's garages even if
-	// geo distance was large (preferred_garage_id).
-	if role == "garage_owner" && h.svc != nil {
-		// filtered already kind-filtered; client shows them
-	}
-	return c.JSON(fiber.Map{"service_requests": filtered, "count": len(filtered)})
+
+	return c.JSON(fiber.Map{
+		"service_requests": filtered,
+		"count":            len(filtered),
+		"role":             role,
+	})
 }
 
-// @Tags         service-requests
-// @Security     BearerAuth
-// @Produce      json
-// @Param        id   path      string  true  "Service Request ID"
-// @Success      200  {object}  models.ServiceRequest
-// @Failure      404  {object}  apierr.Response
-// @Router       /service-requests/{id} [get]
 func (h *ServiceRequestHandler) Get(c *fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {

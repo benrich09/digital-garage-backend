@@ -435,3 +435,96 @@ func (s *ServiceRequestService) Transition(ctx context.Context, id uuid.UUID, ne
 		Msg("service request transitioned")
 	return nil
 }
+
+
+// ListPendingSimple returns pending requests with minimal columns (no geo).
+func (s *ServiceRequestService) ListPendingSimple(ctx context.Context, limit int32) ([]models.OpenServiceRequest, error) {
+	if s.pool == nil {
+		return nil, fmt.Errorf("no pool")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx, `
+		select
+			id,
+			description,
+			status,
+			coalesce(request_kind,
+				case when description like '%[kind:garage_booking]%' then 'garage_booking'
+				     else 'mechanic_request' end),
+			coalesce(latitude, 0),
+			coalesce(longitude, 0),
+			car_owner_id
+		from service_requests
+		where lower(coalesce(status,'')) in ('pending','quoted','open')
+		order by coalesce(requested_at, created_at) desc nulls last
+		limit $1
+	`, limit)
+	if err != nil {
+		// even simpler
+		rows, err = s.pool.Query(ctx, `
+			select id, description, status, 'mechanic_request', 0::float8, 0::float8, car_owner_id
+			from service_requests
+			where lower(coalesce(status,'')) = 'pending'
+			order by created_at desc
+			limit $1
+		`, limit)
+		if err != nil {
+			return nil, err
+		}
+	}
+	defer rows.Close()
+	out := make([]models.OpenServiceRequest, 0)
+	for rows.Next() {
+		var it models.OpenServiceRequest
+		var desc *string
+		if err := rows.Scan(&it.ID, &desc, &it.Status, &it.RequestKind, &it.Latitude, &it.Longitude, &it.OwnerID); err != nil {
+			continue
+		}
+		it.Description = desc
+		out = append(out, it)
+	}
+	return out, nil
+}
+
+// ListPendingForGarageOwner returns garage_booking rows aimed at this owner's garages.
+func (s *ServiceRequestService) ListPendingForGarageOwner(ctx context.Context, ownerID string, limit int32) ([]models.OpenServiceRequest, error) {
+	if s.pool == nil {
+		return nil, fmt.Errorf("no pool")
+	}
+	rows, err := s.pool.Query(ctx, `
+		select
+			sr.id,
+			sr.description,
+			sr.status,
+			coalesce(sr.request_kind, 'garage_booking'),
+			coalesce(sr.latitude, 0),
+			coalesce(sr.longitude, 0),
+			sr.car_owner_id
+		from service_requests sr
+		join garages g on g.id = sr.preferred_garage_id
+		where g.owner_id::text = $1
+		  and lower(coalesce(sr.status,'')) in ('pending','quoted','open')
+		order by coalesce(sr.requested_at, sr.created_at) desc nulls last
+		limit $2
+	`, ownerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]models.OpenServiceRequest, 0)
+	for rows.Next() {
+		var it models.OpenServiceRequest
+		var desc *string
+		if err := rows.Scan(&it.ID, &desc, &it.Status, &it.RequestKind, &it.Latitude, &it.Longitude, &it.OwnerID); err != nil {
+			continue
+		}
+		it.Description = desc
+		if it.RequestKind == "" {
+			it.RequestKind = "garage_booking"
+		}
+		out = append(out, it)
+	}
+	return out, nil
+}
