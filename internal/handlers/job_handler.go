@@ -208,3 +208,47 @@ func indexOfStr(s, sub string) int {
 	}
 	return -1
 }
+
+func (h *JobHandler) Deny(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid booking id")
+	}
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.BodyParser(&in)
+	snap, err := h.svc.ProviderDeny(c.Context(), id, in.Reason)
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, err.Error())
+	}
+	return c.JSON(snap)
+}
+
+func (h *JobHandler) Unsatisfied(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid booking id")
+	}
+	var in struct {
+		Note string `json:"note"`
+	}
+	_ = c.BodyParser(&in)
+	snap, err := h.svc.CustomerUnsatisfied(c.Context(), id, in.Note)
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, err.Error())
+	}
+	return c.JSON(snap)
+}
+
+func (h *JobHandler) Restart(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, "invalid booking id")
+	}
+	snap, err := h.svc.RestartService(c.Context(), id)
+	if err != nil {
+		return apierr.JSON(c, fiber.StatusBadRequest, err.Error())
+	}
+	return c.JSON(snap)
+}

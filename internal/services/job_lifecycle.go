@@ -672,3 +672,65 @@ func (s *JobLifecycleService) GetBillByRequest(ctx context.Context, requestID uu
 		Currency:         currency,
 	}, nil
 }
+
+
+// ProviderDeny terminates a pending/accepted job with optional feedback.
+func (s *JobLifecycleService) ProviderDeny(ctx context.Context, bookingID uuid.UUID, reason string) (JobSnapshot, error) {
+	snap, err := s.load(ctx, bookingID)
+	if err != nil {
+		return snap, err
+	}
+	_, _ = s.pool.Exec(ctx, `
+		update bookings set status = 'cancelled', provider_feedback = $2, updated_at = now() where id = $1
+	`, bookingID, reason)
+	if snap.ServiceRequestID != "" {
+		_, _ = s.pool.Exec(ctx, `
+			update service_requests set status = 'cancelled', decline_reason = $2, updated_at = now()
+			where id = $1::uuid
+		`, snap.ServiceRequestID, reason)
+	}
+	snap.Phase = PhaseCancelled
+	s.notify(snap.CarOwnerID, snap.ProviderID, ws.StatusUpdatePayload{
+		ServiceRequestID: snap.ServiceRequestID,
+		BookingID:        snap.BookingID,
+		Status:           PhaseCancelled,
+	})
+	return snap, nil
+}
+
+// CustomerUnsatisfied — customer rejects work; provider must restart or job fails.
+func (s *JobLifecycleService) CustomerUnsatisfied(ctx context.Context, bookingID uuid.UUID, note string) (JobSnapshot, error) {
+	snap, err := s.load(ctx, bookingID)
+	if err != nil {
+		return snap, err
+	}
+	_, _ = s.pool.Exec(ctx, `
+		update bookings set status = 'needs_rework', customer_satisfied = false, updated_at = now() where id = $1
+	`, bookingID)
+	snap.Phase = "needs_rework"
+	s.notify(snap.CarOwnerID, snap.ProviderID, ws.StatusUpdatePayload{
+		ServiceRequestID: snap.ServiceRequestID,
+		BookingID:        snap.BookingID,
+		Status:           "needs_rework",
+	})
+	return snap, nil
+}
+
+// RestartService — provider restarts after needs_rework.
+func (s *JobLifecycleService) RestartService(ctx context.Context, bookingID uuid.UUID) (JobSnapshot, error) {
+	snap, err := s.load(ctx, bookingID)
+	if err != nil {
+		return snap, err
+	}
+	_, _ = s.pool.Exec(ctx, `
+		update bookings set status = 'in_progress', started_at = coalesce(started_at, now()), updated_at = now() where id = $1
+	`, bookingID)
+	snap.Phase = PhaseInProgress
+	s.syncRequest(ctx, snap.ServiceRequestID, PhaseInProgress)
+	s.notify(snap.CarOwnerID, snap.ProviderID, ws.StatusUpdatePayload{
+		ServiceRequestID: snap.ServiceRequestID,
+		BookingID:        snap.BookingID,
+		Status:           PhaseInProgress,
+	})
+	return snap, nil
+}

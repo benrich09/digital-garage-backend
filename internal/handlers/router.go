@@ -99,6 +99,7 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	// provider role-gated /bookings/:id/* routes.
 	auth.Post("/customer/bookings/:id/confirm-arrival", d.Job.ConfirmArrival)
 	auth.Post("/customer/bookings/:id/confirm-satisfaction", d.Job.ConfirmSatisfaction)
+	auth.Post("/customer/bookings/:id/unsatisfied", d.Job.Unsatisfied)
 	auth.Post("/customer/service-requests/:id/confirm-satisfaction", d.Job.ConfirmSatisfactionByRequest)
 	auth.Post("/customer/bookings/:id/mark-paid", d.Job.CustomerPaid)
 	auth.Post("/customer/reports", d.Report.Create)
@@ -106,6 +107,8 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	auth.Post("/provider/bookings/:id/start", d.Job.Start)
 	auth.Post("/provider/bookings/:id/finish", d.Job.Finish)
 	auth.Post("/provider/bookings/:id/confirm-payment", d.Job.ConfirmPayment)
+	auth.Post("/provider/bookings/:id/deny", d.Job.Deny)
+	auth.Post("/provider/bookings/:id/restart", d.Job.Restart)
 	auth.Post("/provider/bookings/:id/confirm-arrival", d.Job.ConfirmArrival)
 
 
@@ -192,6 +195,8 @@ func NewRouter(d Deps, log zerolog.Logger) *fiber.App {
 	auth.Get("/customer/bookings/:id/bill", d.Job.GetBill)
 	auth.Get("/customer/service-requests/:id/bill", d.Job.GetBillByRequest)
 	fieldRoles.Post("/bookings/:id/confirm-payment", d.Job.ConfirmPayment)
+	fieldRoles.Post("/bookings/:id/deny", d.Job.Deny)
+	fieldRoles.Post("/bookings/:id/restart", d.Job.Restart)
 
 	// Customer job actions — auth only (NO RequireRole).
 	// Registered AFTER fieldRoles. For paths that exist on both (confirm-arrival),
