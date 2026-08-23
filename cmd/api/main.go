@@ -89,7 +89,7 @@ func main() {
 	bookingHandler := handlers.NewBookingHandler(bookingSvc)
 
 	mechanicRepo := repository.NewMechanicRepository(queries)
-	mechanicSvc := services.NewMechanicService(mechanicRepo, bookingRepo, requestRepo, hub, log)
+	mechanicSvc := services.NewMechanicService(mechanicRepo, bookingRepo, requestRepo, hub, log).WithPool(pool)
 	mechanicHandler := handlers.NewMechanicHandler(mechanicSvc)
 
 	adminHandler := handlers.NewAdminHandler(garageSvc).WithPool(pool)
