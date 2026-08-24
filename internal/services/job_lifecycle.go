@@ -622,6 +622,19 @@ func (s *JobLifecycleService) bookCommissionOnPaid(ctx context.Context, snap Job
 	commission := float64(int(amount*0.10*100+0.5)) / 100
 	providerID := snap.ProviderID
 	if providerID == "" {
+		// Resolve from garage owner or mechanic profile
+		var pid string
+		_ = s.pool.QueryRow(ctx, `
+			select coalesce(
+				(select g.owner_id::text from garages g where g.id = b.garage_id),
+				(select m.profile_id::text from mechanics m where m.id = b.mechanic_id)
+			)
+			from bookings b where b.id = $1::uuid
+		`, snap.BookingID).Scan(&pid)
+		providerID = pid
+	}
+	if providerID == "" {
+		s.log.Warn().Str("booking_id", snap.BookingID).Msg("no provider_id — skip commission")
 		return
 	}
 	// Idempotent: one debit per booking
