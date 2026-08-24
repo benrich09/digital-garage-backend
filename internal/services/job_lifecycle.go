@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
+	"github.com/yourorg/digital-garage/internal/models"
 	"github.com/yourorg/digital-garage/internal/ws"
 )
 
@@ -47,10 +48,11 @@ var jobTransitions = map[string][]string{
 
 // JobLifecycleService drives the garage-booking and mechanic-request sequences.
 type JobLifecycleService struct {
-	pool *pgxpool.Pool
-	hub  *ws.Manager
-	push *PushService
-	log  zerolog.Logger
+	pool       *pgxpool.Pool
+	hub        *ws.Manager
+	push       *PushService
+	commission *CommissionService
+	log        zerolog.Logger
 }
 
 func NewJobLifecycleService(pool *pgxpool.Pool, hub *ws.Manager, log zerolog.Logger) *JobLifecycleService {
@@ -59,6 +61,11 @@ func NewJobLifecycleService(pool *pgxpool.Pool, hub *ws.Manager, log zerolog.Log
 
 func (s *JobLifecycleService) WithPush(p *PushService) *JobLifecycleService {
 	s.push = p
+	return s
+}
+
+func (s *JobLifecycleService) WithCommission(c *CommissionService) *JobLifecycleService {
+	s.commission = c
 	return s
 }
 
@@ -74,7 +81,9 @@ type JobSnapshot struct {
 	BillAmount       *float64   `json:"bill_amount,omitempty"`
 	Currency         string     `json:"currency,omitempty"`
 	PaymentConfirmed bool       `json:"payment_confirmed"`
-	CustomerSatisfied bool      `json:"customer_satisfied"`
+	CustomerSatisfied  bool      `json:"customer_satisfied"`
+	CommissionExpected  *float64   `json:"commission_expected,omitempty"`
+	TransactionID       string     `json:"transaction_id,omitempty"`
 }
 
 func (s *JobLifecycleService) load(ctx context.Context, bookingID uuid.UUID) (JobSnapshot, error) {
@@ -399,9 +408,14 @@ func (s *JobLifecycleService) ConfirmSatisfaction(ctx context.Context, bookingID
 	return snap, nil
 }
 
-// SetBill — provider sets price after service (prefer after satisfaction).
-// Persists amount on bookings AND mirrors into service_transactions so the
-// car-owner app can read it even when WS is down.
+// SetBill — provider confirms/sets the service price after work is done.
+// Pipeline:
+//  1) Persist amount on bookings (admin + apps read bill_amount)
+//  2) Upsert service_transactions so the admin dashboard shows the job
+//  3) Notify car owner (WS + optional push) that a bill is ready
+//  4) Surface expected platform commission (CommissionRate) in the response
+// Commission ledger debit is booked when payment is confirmed
+// (ProviderConfirmPayment / car-owner Confirm), not at price-set time.
 func (s *JobLifecycleService) SetBill(ctx context.Context, bookingID uuid.UUID, amount float64, currency string) (JobSnapshot, error) {
 	snap, err := s.load(ctx, bookingID)
 	if err != nil {
@@ -420,12 +434,14 @@ func (s *JobLifecycleService) SetBill(ctx context.Context, bookingID uuid.UUID, 
 		phase == PhaseCompleted ||
 		phase == PhaseAwaitingSatisfaction ||
 		phase == "completed" ||
-		phase == "finished"
+		phase == "finished" ||
+		phase == PhaseInProgress ||
+		phase == "in_progress"
 	if !okToBill {
-		return snap, fmt.Errorf("wait until the customer confirms they are satisfied (current: %s)", phase)
+		return snap, fmt.Errorf("wait until the service is finished (current: %s)", phase)
 	}
 
-	// 1) bookings.bill_amount
+	// --- 1) bookings.bill_amount (source of truth for price) ------------
 	_, err = s.pool.Exec(ctx, `
 		update bookings
 		set bill_amount = $2,
@@ -448,54 +464,173 @@ func (s *JobLifecycleService) SetBill(ctx context.Context, bookingID uuid.UUID, 
 		_ = s.setPhase(ctx, bookingID, PhaseAwaitingPayment, "")
 	}
 
-	// 2) Mirror into service_transactions (car-owner polls this)
+	// Resolve parties for dashboard row
+	providerID := snap.ProviderID
+	if providerID == "" {
+		var pid string
+		_ = s.pool.QueryRow(ctx, `
+			select coalesce(
+				(select g.owner_id::text from garages g join bookings b on b.garage_id = g.id where b.id = $1),
+				(select m.profile_id::text from mechanics m join bookings b on b.mechanic_id = m.id where b.id = $1)
+			)
+		`, bookingID).Scan(&pid)
+		providerID = pid
+		snap.ProviderID = pid
+	}
+	carOwnerID := snap.CarOwnerID
+	var garageID *uuid.UUID
+	var gid uuid.UUID
+	if e := s.pool.QueryRow(ctx, `select garage_id from bookings where id = $1`, bookingID).Scan(&gid); e == nil && gid != uuid.Nil {
+		garageID = &gid
+	}
+	serviceName := "Vehicle service"
 	if snap.ServiceRequestID != "" {
-		if reqID, perr := uuid.Parse(snap.ServiceRequestID); perr == nil {
-			_, terr := s.pool.Exec(ctx, `
-				insert into service_transactions (request_id, amount, currency, status, created_at)
-				values ($1, $2, $3, 'awaiting_confirmation', now())
-			`, reqID, amount, currency)
-			if terr != nil {
-				// alternate column names
-				_, _ = s.pool.Exec(ctx, `
-					insert into service_transactions (service_request_id, amount, currency, status)
-					values ($1, $2, $3, 'awaiting_confirmation')
-				`, reqID, amount, currency)
-				s.log.Warn().Err(terr).Msg("service_transactions insert failed")
+		var cat string
+		_ = s.pool.QueryRow(ctx, `
+			select coalesce(sc.name, 'Vehicle service')
+			from service_requests sr
+			left join service_categories sc on sc.id = sr.category_id
+			where sr.id = $1::uuid
+		`, snap.ServiceRequestID).Scan(&cat)
+		if cat != "" {
+			serviceName = cat
+		}
+	}
+
+	// --- 2) service_transactions for admin dashboard + car-owner confirm --
+	txnID := ""
+	if s.commission != nil && providerID != "" && carOwnerID != "" {
+		pUUID, perr := uuid.Parse(providerID)
+		cUUID, cerr := uuid.Parse(carOwnerID)
+		if perr == nil && cerr == nil {
+			bid := bookingID
+			var rid *uuid.UUID
+			if snap.ServiceRequestID != "" {
+				if parsed, e := uuid.Parse(snap.ServiceRequestID); e == nil {
+					rid = &parsed
+				}
+			}
+			in := models.RecordServiceInput{
+				CarOwnerID:  cUUID,
+				BookingID:   &bid,
+				RequestID:   rid,
+				GarageID:    garageID,
+				ServiceName: serviceName,
+				Amount:      amount,
+				Currency:    currency,
+				PaidMethod:  "cash",
+			}
+			txn, rerr := s.commission.RecordService(ctx, pUUID, in)
+			if rerr != nil {
+				s.log.Warn().Err(rerr).Msg("RecordService after SetBill failed — falling back to direct insert")
+			} else {
+				txnID = txn.ID.String()
+			}
+		}
+	}
+	// Direct upsert fallback (idempotent on booking_id when possible)
+	if txnID == "" && carOwnerID != "" && providerID != "" {
+		var existing string
+		_ = s.pool.QueryRow(ctx, `
+			select id::text from service_transactions
+			where booking_id = $1
+			order by created_at desc nulls last limit 1
+		`, bookingID).Scan(&existing)
+		if existing != "" {
+			_, _ = s.pool.Exec(ctx, `
+				update service_transactions
+				set amount = $2, currency = $3, status = 'awaiting_confirmation', service_name = $4
+				where id = $1::uuid
+			`, existing, amount, currency, serviceName)
+			txnID = existing
+		} else {
+			nid := uuid.New()
+			_, ierr := s.pool.Exec(ctx, `
+				insert into service_transactions (
+					id, booking_id, request_id, car_owner_id, provider_id, garage_id,
+					service_name, amount, currency, paid_method, status, created_at
+				) values (
+					$1, $2, nullif($3,'')::uuid, $4::uuid, $5::uuid, $6,
+					$7, $8, $9, 'cash', 'awaiting_confirmation', now()
+				)
+			`, nid, bookingID, snap.ServiceRequestID, carOwnerID, providerID, garageID,
+				serviceName, amount, currency)
+			if ierr != nil {
+				// Minimal columns
+				_, ierr2 := s.pool.Exec(ctx, `
+					insert into service_transactions (request_id, amount, currency, status, created_at)
+					values (nullif($1,'')::uuid, $2, $3, 'awaiting_confirmation', now())
+				`, snap.ServiceRequestID, amount, currency)
+				if ierr2 != nil {
+					s.log.Warn().Err(ierr).Err(ierr2).Msg("service_transactions insert failed")
+				} else {
+					txnID = nid.String()
+				}
+			} else {
+				txnID = nid.String()
 			}
 		}
 	}
 
-	// 3) Tag request description with [bill:amount]
+	// Tag request description for debugging / offline clients
 	if snap.ServiceRequestID != "" {
 		tag := fmt.Sprintf("[bill:%.0f %s]", amount, currency)
 		_, _ = s.pool.Exec(ctx, `
 			update service_requests
 			set description = case
-				when coalesce(description,'') = '' then $2
-				when description like '%[bill:%' then description
-				else description || E'
-' || $2
+				when description is null or description = '' then $2
+				when description like '%%[bill:%%' then regexp_replace(description, '\[bill:[^\]]+\]', $2)
+				else description || E'\n' || $2
 			end,
+			status = 'awaiting_payment',
 			updated_at = now()
 			where id = $1::uuid
 		`, snap.ServiceRequestID, tag)
 	}
 
-	snap.Phase = PhaseAwaitingPayment
+	// --- 3) Notify car owner: bill ready --------------------------------
+	expected := CommissionOn(amount)
 	snap.BillAmount = &amount
 	snap.Currency = currency
-	snap.CustomerSatisfied = true
+	snap.Phase = PhaseAwaitingPayment
+	snap.CommissionExpected = &expected
+	snap.TransactionID = txnID
+
 	s.notify(snap.CarOwnerID, snap.ProviderID, ws.StatusUpdatePayload{
 		ServiceRequestID: snap.ServiceRequestID,
 		BookingID:        snap.BookingID,
 		Status:           PhaseAwaitingPayment,
 	})
+	if s.hub != nil && snap.CarOwnerID != "" {
+		s.hub.SendToUser(snap.CarOwnerID, ws.NewEvent(ws.EventConfirmationRequested, ws.ConfirmationRequestedPayload{
+			TransactionID: txnID,
+			ServiceName:   serviceName,
+			Amount:        amount,
+			Currency:      currency,
+		}))
+	}
+	if s.push != nil && snap.CarOwnerID != "" {
+		if uid, e := uuid.Parse(snap.CarOwnerID); e == nil {
+			s.push.Notify(ctx, uid, "Bill ready",
+				fmt.Sprintf("Your service costs %.0f %s. Confirm payment in the app.", amount, currency),
+				map[string]string{
+					"type":               "bill_ready",
+					"booking_id":         snap.BookingID,
+					"service_request_id": snap.ServiceRequestID,
+					"amount":             fmt.Sprintf("%.2f", amount),
+					"commission":         fmt.Sprintf("%.2f", expected),
+				})
+		}
+	}
+
 	s.log.Info().
-		Str("booking_id", bookingID.String()).
+		Str("booking_id", snap.BookingID).
 		Float64("amount", amount).
-		Str("currency", currency).
-		Msg("bill set for customer")
+		Float64("commission_expected", expected).
+		Str("transaction_id", txnID).
+		Str("provider_id", providerID).
+		Msg("provider price set — dashboard transaction ready, commission pending confirmation")
+
 	return snap, nil
 }
 
@@ -551,7 +686,7 @@ func (s *JobLifecycleService) ProviderConfirmPayment(ctx context.Context, bookin
 		_, _ = s.pool.Exec(ctx, `update bookings set status = 'payment_rejected', updated_at = now() where id = $1`, bookingID)
 		if snap.ServiceRequestID != "" {
 			if rid, e := uuid.Parse(snap.ServiceRequestID); e == nil {
-				_, _ = s.pool.Exec(ctx, `update service_transactions set status = 'rejected' where request_id = $1`, rid)
+				_, _ = s.pool.Exec(ctx, `update service_transactions set status = 'disputed' where booking_id = $1 or request_id = $2 or service_request_id = $2`, bookingID, rid)
 			}
 		}
 		s.notify(snap.CarOwnerID, snap.ProviderID, ws.StatusUpdatePayload{
@@ -559,37 +694,103 @@ func (s *JobLifecycleService) ProviderConfirmPayment(ctx context.Context, bookin
 			BookingID:        snap.BookingID,
 			Status:           "payment_rejected",
 		})
-		return snap, fmt.Errorf("payment not received — ask the customer to pay")
+		return snap, fmt.Errorf("payment not received")
 	}
-	_, err = s.pool.Exec(ctx, `
+
+	// Mark booking paid
+	_, _ = s.pool.Exec(ctx, `
 		update bookings
-		set payment_confirmed = true, status = $2, updated_at = now()
+		set status = $2, payment_confirmed = true, updated_at = now()
 		where id = $1
 	`, bookingID, PhasePaid)
-	if err != nil {
-		_, _ = s.pool.Exec(ctx, `update bookings set status = $2, updated_at = now() where id = $1`, bookingID, PhasePaid)
-	}
-	if snap.ServiceRequestID != "" {
-		if rid, e := uuid.Parse(snap.ServiceRequestID); e == nil {
+	_ = s.setPhase(ctx, bookingID, PhasePaid, "")
+
+	// Confirm matching service_transaction → DB trigger books commission
+	var txnID string
+	_ = s.pool.QueryRow(ctx, `
+		select id::text from service_transactions
+		where booking_id = $1
+		   or ($2 <> '' and (request_id = $2::uuid or service_request_id = $2::uuid))
+		order by created_at desc nulls last limit 1
+	`, bookingID, snap.ServiceRequestID).Scan(&txnID)
+
+	if txnID != "" {
+		confirmer := snap.CarOwnerID
+		if confirmer == "" {
+			confirmer = snap.ProviderID
+		}
+		_, cerr := s.pool.Exec(ctx, `
+			update service_transactions
+			set status = 'confirmed',
+			    confirmed_at = now(),
+			    confirmed_by = nullif($2,'')::uuid
+			where id = $1::uuid and status <> 'confirmed'
+		`, txnID, confirmer)
+		if cerr != nil {
+			// Soften constraint if confirmed_by required with actor
 			_, _ = s.pool.Exec(ctx, `
 				update service_transactions
-				set status = 'confirmed', confirmed_at = coalesce(confirmed_at, now())
-				where request_id = $1 or service_request_id = $1
-			`, rid)
+				set status = 'confirmed', confirmed_at = now(), confirmed_by = coalesce(nullif($2,'')::uuid, car_owner_id)
+				where id = $1::uuid
+			`, txnID, confirmer)
+		}
+		snap.TransactionID = txnID
+		// Prefer service Confirm path when commission service is wired
+		if s.commission != nil && snap.CarOwnerID != "" {
+			if tid, e := uuid.Parse(txnID); e == nil {
+				if cid, e2 := uuid.Parse(snap.CarOwnerID); e2 == nil {
+					if _, e3 := s.commission.Confirm(ctx, cid, tid); e3 != nil {
+						s.log.Warn().Err(e3).Msg("commission.Confirm after provider payment — falling back to ledger insert")
+					}
+				}
+			}
 		}
 	}
-	// Book platform commission immediately on provider payment confirmation.
+
+	// Always ensure ledger has a debit (idempotent)
 	s.bookCommissionOnPaid(ctx, snap)
+
+	if snap.BillAmount != nil {
+		exp := CommissionOn(*snap.BillAmount)
+		snap.CommissionExpected = &exp
+	} else {
+		var bill float64
+		_ = s.pool.QueryRow(ctx, `select coalesce(bill_amount,0) from bookings where id = $1`, bookingID).Scan(&bill)
+		if bill > 0 {
+			snap.BillAmount = &bill
+			exp := CommissionOn(bill)
+			snap.CommissionExpected = &exp
+		}
+	}
 	snap.Phase = PhasePaid
 	snap.PaymentConfirmed = true
-	s.syncRequest(ctx, snap.ServiceRequestID, PhasePaid)
+
 	s.notify(snap.CarOwnerID, snap.ProviderID, ws.StatusUpdatePayload{
 		ServiceRequestID: snap.ServiceRequestID,
 		BookingID:        snap.BookingID,
 		Status:           PhasePaid,
 	})
-	s.log.Info().Str("booking_id", bookingID.String()).Msg("provider confirmed payment")
+	if s.hub != nil && snap.ProviderID != "" && snap.CommissionExpected != nil {
+		s.hub.SendToUser(snap.ProviderID, ws.NewEvent(ws.EventCommissionBooked, ws.CommissionBookedPayload{
+			TransactionID: snap.TransactionID,
+			GrossAmount:   derefFloat(snap.BillAmount),
+			Commission:    *snap.CommissionExpected,
+		}))
+	}
+
+	s.log.Info().
+		Str("booking_id", snap.BookingID).
+		Str("transaction_id", snap.TransactionID).
+		Msg("provider confirmed payment — commission updated for dashboard")
+
 	return snap, nil
+}
+
+func derefFloat(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // bookCommissionOnPaid writes a commission_ledger debit for the provider (idempotent).
@@ -618,8 +819,8 @@ func (s *JobLifecycleService) bookCommissionOnPaid(ctx context.Context, snap Job
 		s.log.Warn().Str("booking_id", snap.BookingID).Msg("no bill amount — skip commission")
 		return
 	}
-	// 10% platform cut (matches CommissionRate in commission_service)
-	commission := float64(int(amount*0.10*100+0.5)) / 100
+	// Platform cut — single source of truth: CommissionRate via CommissionOn
+	commission := CommissionOn(amount)
 	providerID := snap.ProviderID
 	if providerID == "" {
 		// Resolve from garage owner or mechanic profile

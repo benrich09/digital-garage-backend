@@ -110,7 +110,7 @@ func main() {
 	reviewSvc := services.NewReviewService(reviewRepo, bookingRepo, requestRepo).WithPool(pool)
 	reviewHandler := handlers.NewReviewHandler(reviewSvc)
 
-	jobLife := services.NewJobLifecycleService(pool, hub, log).WithPush(pushSvc)
+	jobLife := services.NewJobLifecycleService(pool, hub, log).WithPush(pushSvc).WithCommission(commissionSvc)
 	jobHandler := handlers.NewJobHandler(jobLife)
 	reportHandler := handlers.NewReportHandler(pool)
 

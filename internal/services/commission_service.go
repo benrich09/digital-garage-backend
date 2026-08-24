@@ -119,6 +119,37 @@ func (s *CommissionService) RecordService(
 		return models.ServiceTransaction{}, err
 	}
 
+	// If a transaction already exists for this booking, update amount
+	// (provider corrected the price) instead of inserting a duplicate —
+	// keeps admin dashboard + commission consistent.
+	if s.pool != nil && in.BookingID != nil {
+		var existingID uuid.UUID
+		e := s.pool.QueryRow(ctx, `
+			select id from service_transactions
+			where booking_id = $1 and status in ('awaiting_confirmation','pending')
+			order by created_at desc nulls last limit 1
+		`, *in.BookingID).Scan(&existingID)
+		if e == nil && existingID != uuid.Nil {
+			_, _ = s.pool.Exec(ctx, `
+				update service_transactions
+				set amount = $2, currency = $3, service_name = $4,
+				    provider_id = $5, car_owner_id = $6
+				where id = $1
+			`, existingID, in.Amount, defaultCurrency(in.Currency), in.ServiceName, providerID, in.CarOwnerID)
+			txn, gerr := s.txns.GetByID(ctx, existingID)
+			if gerr == nil {
+				s.hub.SendToUser(in.CarOwnerID.String(), ws.NewEvent(ws.EventConfirmationRequested, ws.ConfirmationRequestedPayload{
+					TransactionID: txn.ID.String(),
+					ServiceName:   txn.ServiceName,
+					Amount:        txn.Amount,
+					Currency:      txn.Currency,
+				}))
+				s.log.Info().Str("transaction_id", existingID.String()).Float64("amount", in.Amount).Msg("service price updated on existing transaction")
+				return txn, nil
+			}
+		}
+	}
+
 	txn, err := s.txns.Create(ctx, models.ServiceTransaction{
 		ProviderID:  providerID,
 		CarOwnerID:  in.CarOwnerID,

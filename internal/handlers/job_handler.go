@@ -166,13 +166,15 @@ func (h *JobHandler) GetBill(c *fiber.Ctx) error {
 		return apierr.JSON(c, fiber.StatusNotFound, "booking not found")
 	}
 	return c.JSON(fiber.Map{
-		"booking_id":         snap.BookingID,
-		"service_request_id": snap.ServiceRequestID,
-		"phase":              snap.Phase,
-		"bill_amount":        snap.BillAmount,
-		"currency":           snap.Currency,
-		"customer_satisfied": snap.CustomerSatisfied,
-		"payment_confirmed":  snap.PaymentConfirmed,
+		"booking_id":           snap.BookingID,
+		"service_request_id":   snap.ServiceRequestID,
+		"phase":                snap.Phase,
+		"bill_amount":          snap.BillAmount,
+		"currency":             snap.Currency,
+		"customer_satisfied":   snap.CustomerSatisfied,
+		"payment_confirmed":    snap.PaymentConfirmed,
+		"commission_expected":  snap.CommissionExpected,
+		"transaction_id":       snap.TransactionID,
 	})
 }
 
@@ -186,13 +188,15 @@ func (h *JobHandler) GetBillByRequest(c *fiber.Ctx) error {
 		return apierr.JSON(c, fiber.StatusNotFound, err.Error())
 	}
 	return c.JSON(fiber.Map{
-		"booking_id":         snap.BookingID,
-		"service_request_id": snap.ServiceRequestID,
-		"phase":              snap.Phase,
-		"bill_amount":        snap.BillAmount,
-		"currency":           snap.Currency,
-		"customer_satisfied": snap.CustomerSatisfied,
-		"payment_confirmed":  snap.PaymentConfirmed,
+		"booking_id":           snap.BookingID,
+		"service_request_id":   snap.ServiceRequestID,
+		"phase":                snap.Phase,
+		"bill_amount":          snap.BillAmount,
+		"currency":             snap.Currency,
+		"customer_satisfied":   snap.CustomerSatisfied,
+		"payment_confirmed":    snap.PaymentConfirmed,
+		"commission_expected":  snap.CommissionExpected,
+		"transaction_id":       snap.TransactionID,
 	})
 }
 
