@@ -571,10 +571,15 @@ func (s *JobLifecycleService) ProviderConfirmPayment(ctx context.Context, bookin
 	}
 	if snap.ServiceRequestID != "" {
 		if rid, e := uuid.Parse(snap.ServiceRequestID); e == nil {
-			_, _ = s.pool.Exec(ctx, `update service_transactions set status = 'confirmed' where request_id = $1`, rid)
-			_, _ = s.pool.Exec(ctx, `update service_transactions set status = 'confirmed' where service_request_id = $1`, rid)
+			_, _ = s.pool.Exec(ctx, `
+				update service_transactions
+				set status = 'confirmed', confirmed_at = coalesce(confirmed_at, now())
+				where request_id = $1 or service_request_id = $1
+			`, rid)
 		}
 	}
+	// Book platform commission immediately on provider payment confirmation.
+	s.bookCommissionOnPaid(ctx, snap)
 	snap.Phase = PhasePaid
 	snap.PaymentConfirmed = true
 	s.syncRequest(ctx, snap.ServiceRequestID, PhasePaid)
@@ -585,6 +590,78 @@ func (s *JobLifecycleService) ProviderConfirmPayment(ctx context.Context, bookin
 	})
 	s.log.Info().Str("booking_id", bookingID.String()).Msg("provider confirmed payment")
 	return snap, nil
+}
+
+// bookCommissionOnPaid writes a commission_ledger debit for the provider (idempotent).
+func (s *JobLifecycleService) bookCommissionOnPaid(ctx context.Context, snap JobSnapshot) {
+	if s.pool == nil {
+		return
+	}
+	amount := 0.0
+	if snap.BillAmount != nil {
+		amount = *snap.BillAmount
+	}
+	if amount <= 0 {
+		// try booking / transactions
+		var bill float64
+		_ = s.pool.QueryRow(ctx, `select coalesce(bill_amount,0) from bookings where id = $1::uuid`, snap.BookingID).Scan(&bill)
+		if bill <= 0 && snap.ServiceRequestID != "" {
+			_ = s.pool.QueryRow(ctx, `
+				select coalesce(amount,0) from service_transactions
+				where request_id = $1::uuid or service_request_id = $1::uuid
+				order by created_at desc nulls last limit 1
+			`, snap.ServiceRequestID).Scan(&bill)
+		}
+		amount = bill
+	}
+	if amount <= 0 {
+		s.log.Warn().Str("booking_id", snap.BookingID).Msg("no bill amount — skip commission")
+		return
+	}
+	// 10% platform cut (matches CommissionRate in commission_service)
+	commission := float64(int(amount*0.10*100+0.5)) / 100
+	providerID := snap.ProviderID
+	if providerID == "" {
+		return
+	}
+	// Idempotent: one debit per booking
+	var exists bool
+	_ = s.pool.QueryRow(ctx, `
+		select exists(
+			select 1 from commission_ledger
+			where note like '%' || $1 || '%'
+			  and entry_type in ('debit','commission','job')
+		)
+	`, snap.BookingID).Scan(&exists)
+	if exists {
+		return
+	}
+	_, err := s.pool.Exec(ctx, `
+		insert into commission_ledger (id, provider_id, amount, currency, entry_type, note, created_at)
+		values (gen_random_uuid(), $1::uuid, $2, coalesce(nullif($3,''),'TZS'), 'debit',
+		        $4, now())
+	`, providerID, commission, "TZS",
+		"commission on booking "+snap.BookingID+" (gross "+formatAmount(amount)+")")
+	if err != nil {
+		// minimal schema fallback
+		_, err2 := s.pool.Exec(ctx, `
+			insert into commission_ledger (provider_id, amount, note, created_at)
+			values ($1::uuid, $2, $3, now())
+		`, providerID, commission, "commission booking "+snap.BookingID)
+		if err2 != nil {
+			s.log.Warn().Err(err2).Msg("commission ledger insert failed")
+			return
+		}
+	}
+	s.log.Info().
+		Str("provider_id", providerID).
+		Float64("gross", amount).
+		Float64("commission", commission).
+		Msg("commission booked after payment confirm")
+}
+
+func formatAmount(v float64) string {
+	return fmt.Sprintf("%.2f", v)
 }
 
 // GetSnapshot public
